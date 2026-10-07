@@ -84,7 +84,25 @@ class CaptureDriver extends Node:
 				_shot("11_else_gold_anchor")
 			254:
 				_key(KEY_2)                        # NOT NOW 关闭
+			258:
+				player.global_position = Vector2(620, 570)   # 空地展示朝向
 			262:
+				player._update_facing(Vector2(0, 1))   # 正面（朝镜头）
+			266:
+				_shot("12_player_front")
+			270:
+				player._update_facing(Vector2(0, -1))  # 背面
+			274:
+				_shot("13_player_back")
+			278:
+				player._update_facing(Vector2(-1, 0))  # 左侧
+			282:
+				_shot("14_player_side_left")
+			286:
+				player._update_facing(Vector2(1, 0))   # 右侧（镜像）
+			290:
+				_shot("15_player_side_right")
+			298:
 				get_tree().quit()
 
 	# 直接调用主脚本的输入处理，模拟按键。

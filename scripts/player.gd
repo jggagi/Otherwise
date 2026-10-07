@@ -1,36 +1,45 @@
 extends CharacterBody2D
-## Temporary protagonist placeholder: a muted quarter-view sprite.
+## Protagonist: Antigravity-generated 3-view sprite (front / back / side).
 ## Eight-directional WASD / arrow movement on a fixed camera.
+## Facing picks the closest of the three views; the side view is
+## mirrored for rightward movement. Collision stays small on purpose
+## so the cramped apartment remains navigable.
 
 @export var speed: float = 220.0
 
+## 角色身高（游戏单位），按背景沙发/门屏幕高度做 2.5D 投影标定。
+const TARGET_HEIGHT := 200.0
+## 脚底相对节点原点的落点（与旧占位脚位一致）。
+const GROUND_Y := 2.0
+
+var _body: Sprite2D
+var _tex_front: Texture2D
+var _tex_back: Texture2D
+var _tex_side: Texture2D
+
 
 func _ready() -> void:
+	_tex_front = load("res://assets/player/player_front.png")
+	_tex_back = load("res://assets/player/player_back.png")
+	_tex_side = load("res://assets/player/player_side.png")
 	_build_body()
 
 
 func _build_body() -> void:
 	# Soft grounding shadow.
 	var shadow := Polygon2D.new()
-	shadow.polygon = _circle_points(16.0, 24)
+	shadow.polygon = _circle_points(34.0, 24)
 	shadow.color = Color(0.0, 0.0, 0.0, 0.26)
 	shadow.position = Vector2(0.0, 7.0)
 	add_child(shadow)
 
-	# Torso.
-	var torso := Polygon2D.new()
-	torso.polygon = _rect_points(Vector2(-13.0, -27.0), Vector2(13.0, 2.0))
-	torso.color = Color(0.32, 0.44, 0.46)
-	add_child(torso)
+	# Character sprite (facing managed by _set_facing).
+	_body = Sprite2D.new()
+	_body.name = "Body"
+	add_child(_body)
+	_set_facing(_tex_front, false)
 
-	# Head.
-	var head := Polygon2D.new()
-	head.polygon = _circle_points(11.0, 20)
-	head.color = Color(0.80, 0.66, 0.54)
-	head.position = Vector2(0.0, -26.0)
-	add_child(head)
-
-	# Collision capsule (invisible).
+	# Collision capsule (invisible; kept small for navigation).
 	var collision := CollisionShape2D.new()
 	var capsule := CapsuleShape2D.new()
 	capsule.radius = 13.0
@@ -51,8 +60,32 @@ func _physics_process(_delta: float) -> void:
 		direction.x += 1.0
 	if direction.length_squared() > 0.0:
 		direction = direction.normalized()
+		_update_facing(direction)
 	velocity = direction * speed
 	move_and_slide()
+
+
+## 切换朝向贴图：等比缩放到 TARGET_HEIGHT，脚底对齐 GROUND_Y。
+func _set_facing(tex: Texture2D, flip: bool) -> void:
+	if tex == null or _body == null:
+		return
+	if _body.texture == tex and _body.flip_h == flip:
+		return
+	_body.texture = tex
+	_body.flip_h = flip
+	var k: float = TARGET_HEIGHT / tex.get_height()
+	_body.scale = Vector2(k, k)
+	_body.position = Vector2(0.0, GROUND_Y - tex.get_height() * k * 0.5)
+
+
+## 按移动方向取最近视角：横移用侧面（右移镜像），纵移用正面/背面。
+func _update_facing(dir: Vector2) -> void:
+	if absf(dir.x) > absf(dir.y):
+		_set_facing(_tex_side, dir.x > 0.0)
+	elif dir.y < 0.0:
+		_set_facing(_tex_back, false)
+	else:
+		_set_facing(_tex_front, false)
 
 
 func _circle_points(radius: float, segments: int) -> PackedVector2Array:
@@ -61,7 +94,3 @@ func _circle_points(radius: float, segments: int) -> PackedVector2Array:
 		var angle := TAU * float(i) / float(segments)
 		points.append(Vector2(cos(angle), sin(angle)) * radius)
 	return points
-
-
-func _rect_points(a: Vector2, b: Vector2) -> PackedVector2Array:
-	return PackedVector2Array([a, Vector2(b.x, a.y), b, Vector2(a.x, b.y)])
