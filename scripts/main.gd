@@ -3,14 +3,6 @@ extends Node2D
 ## Builds the apartment stage box: warm interior walls/floor, a rainy city
 ## window, four interactables, the player, ELSE interface and minimal UI.
 
-const VOID := Color(0.03, 0.045, 0.07)
-const WALL_BACK := Color(0.55, 0.49, 0.43)
-const WALL_SIDE := Color(0.44, 0.39, 0.34)
-const FLOOR_WOOD := Color(0.34, 0.27, 0.20)
-const FLOOR_SEAM := Color(0.30, 0.24, 0.17)
-const WINDOW_SKY := Color(0.12, 0.16, 0.23)
-const FRAME := Color(0.38, 0.33, 0.28)
-
 ## 游戏主状态
 enum State {
 	NORMAL,       # 自由探索房间
@@ -86,8 +78,6 @@ func _ready() -> void:
 	room.y_sort_enabled = true
 	_build_backdrop()
 	_build_walls()
-	_build_floor()
-	_build_light_pools()
 	_build_furniture()
 	_build_interactables()
 	_build_boundary()
@@ -146,55 +136,19 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 # ---------------------------------------------------------------------------
-# Geometry helpers
+# Physics helpers
 # ---------------------------------------------------------------------------
 
-func _poly(parent: Node, points: PackedVector2Array, color: Color) -> Polygon2D:
-	var p := Polygon2D.new()
-	p.polygon = points
-	p.color = color
-	parent.add_child(p)
-	return p
-
-
-func _rect(parent: Node, r: Rect2, color: Color) -> Polygon2D:
-	return _poly(parent, PackedVector2Array([
-		r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y),
-	]), color)
-
-
-func _circle(parent: Node, center: Vector2, radius: float, color: Color) -> Polygon2D:
-	var points := PackedVector2Array()
-	for i in range(32):
-		var angle := TAU * float(i) / 32.0
-		points.append(center + Vector2(cos(angle), sin(angle)) * radius)
-	return _poly(parent, points, color)
-
-
-func _add_box(parent: Node, pos: Vector2, w: float, d: float, h: float, top: Color, front: Color) -> Node2D:
-	var box := Node2D.new()
-	box.position = pos
-	# Top face (recedes up-screen by depth d).
-	_poly(box, PackedVector2Array([
-		Vector2(-w * 0.5, -d), Vector2(w * 0.5, -d),
-		Vector2(w * 0.5, 0.0), Vector2(-w * 0.5, 0.0),
-	]), top)
-	# Front face (drops down by height h).
-	_poly(box, PackedVector2Array([
-		Vector2(-w * 0.5, 0.0), Vector2(w * 0.5, 0.0),
-		Vector2(w * 0.5, h), Vector2(-w * 0.5, h),
-	]), front)
-	# Collision footprint covering the visible extent.
+func _add_obstacle(parent: Node, pos: Vector2, size: Vector2) -> StaticBody2D:
 	var body := StaticBody2D.new()
+	body.position = pos
 	var col := CollisionShape2D.new()
 	var shape := RectangleShape2D.new()
-	shape.size = Vector2(w, d + h)
+	shape.size = size
 	col.shape = shape
-	col.position = Vector2(0.0, (h - d) * 0.5)
 	body.add_child(col)
-	box.add_child(body)
-	parent.add_child(box)
-	return box
+	parent.add_child(body)
+	return body
 
 
 func _add_wall(parent: Node, a: Vector2, b: Vector2, thickness: float) -> void:
@@ -216,60 +170,19 @@ func _add_wall(parent: Node, a: Vector2, b: Vector2, thickness: float) -> void:
 # ---------------------------------------------------------------------------
 
 func _build_backdrop() -> void:
-	var bg := _poly(self, PackedVector2Array([
-		Vector2(-2000, -2000), Vector2(2000, -2000),
-		Vector2(2000, 2000), Vector2(-2000, 2000),
-	]), VOID)
-	bg.z_index = -100
+	var bg := Sprite2D.new()
+	bg.name = "Background"
+	var tex: Texture2D = load("res://assets/apartment_bg_v1.jpg")
+	bg.texture = tex
+	bg.position = Vector2(1152.0 * 0.5, 648.0 * 0.5)
+	if tex != null:
+		bg.scale = Vector2(1152.0 / tex.get_width(), 648.0 / tex.get_height())
+	bg.z_index = -150
+	add_child(bg)
 
 
 func _build_walls() -> void:
-	# Back wall (straight-on far wall).
-	_rect(walls, Rect2(220, 80, 840, 220), WALL_BACK)
-	# Side walls, slanting toward the viewer.
-	_poly(walls, PackedVector2Array([
-		Vector2(120, 80), Vector2(220, 80), Vector2(220, 300), Vector2(130, 660),
-	]), WALL_SIDE)
-	_poly(walls, PackedVector2Array([
-		Vector2(1160, 80), Vector2(1060, 80), Vector2(1060, 300), Vector2(1150, 660),
-	]), WALL_SIDE)
-	# Kitchen sink window (small) and, right, the big rainy living-room window.
-	_build_window(Rect2(385, 145, 120, 90), false)
-	_build_window(Rect2(865, 120, 160, 145), true)
 	_build_rain()
-	# Bedroom glimpse: a dark doorway with a faint bed inside.
-	_poly(walls, PackedVector2Array([
-		Vector2(700, 100), Vector2(790, 100), Vector2(790, 300), Vector2(700, 300),
-	]), Color(0.06, 0.07, 0.09))
-	_poly(walls, PackedVector2Array([
-		Vector2(712, 240), Vector2(778, 240), Vector2(778, 298), Vector2(712, 298),
-	]), Color(0.13, 0.14, 0.18))
-	_poly(walls, PackedVector2Array([
-		Vector2(712, 210), Vector2(778, 210), Vector2(778, 232), Vector2(712, 232),
-	]), Color(0.20, 0.21, 0.26))
-
-
-func _build_window(r: Rect2, with_city: bool) -> void:
-	_rect(walls, r, WINDOW_SKY)
-	if with_city:
-		var buildings := [
-			Rect2(r.position.x + 6, r.end.y - 60, 34, 60),
-			Rect2(r.position.x + 46, r.end.y - 40, 44, 40),
-			Rect2(r.position.x + 96, r.end.y - 66, 40, 66),
-			Rect2(r.position.x + 140, r.end.y - 34, 20, 34),
-		]
-		for br: Rect2 in buildings:
-			_rect(walls, br, Color(0.07, 0.09, 0.14))
-		for i in range(8):
-			var wx := r.position.x + 10.0 + float(i) * 19.0
-			var wy := r.position.y + 14.0 + float(i % 3) * 22.0
-			_rect(walls, Rect2(wx, wy, 7, 9), Color(0.88, 0.74, 0.48, 0.75))
-	var fw := 6.0
-	_rect(walls, Rect2(r.position.x - fw, r.position.y - fw, r.size.x + fw * 2.0, fw), FRAME)
-	_rect(walls, Rect2(r.position.x - fw, r.position.y + r.size.y, r.size.x + fw * 2.0, fw), FRAME)
-	_rect(walls, Rect2(r.position.x - fw, r.position.y, fw, r.size.y), FRAME)
-	_rect(walls, Rect2(r.position.x + r.size.x, r.position.y, fw, r.size.y), FRAME)
-	_rect(walls, Rect2(r.position.x + r.size.x * 0.5 - 2.0, r.position.y, 4.0, r.size.y), FRAME)
 
 
 func _build_rain() -> void:
@@ -281,7 +194,7 @@ func _build_rain() -> void:
 			Vector2(1.0, dh * 0.5), Vector2(-1.0, dh * 0.5),
 		])
 		drop.color = Color(0.62, 0.72, 0.9, 0.45)
-		drop.position = Vector2(randf_range(872.0, 1018.0), randf_range(126.0, 260.0))
+		drop.position = Vector2(randf_range(935.0, 1080.0), randf_range(126.0, 260.0))
 		walls.add_child(drop)
 		_rain.append(drop)
 
@@ -295,67 +208,23 @@ func _build_rain() -> void:
 		])
 		drop.rotation = deg_to_rad(-12.0)
 		drop.color = Color(0.75, 0.82, 0.95, 0.28)
-		drop.position = Vector2(randf_range(920.0, 1022.0), randf_range(126.0, 260.0))
+		drop.position = Vector2(randf_range(960.0, 1065.0), randf_range(126.0, 260.0))
 		drop.visible = false
 		walls.add_child(drop)
 		_rain_anomaly.append(drop)
 
 
-func _build_floor() -> void:
-	_poly(floor_node, PackedVector2Array([
-		Vector2(220, 300), Vector2(1060, 300), Vector2(1150, 660), Vector2(130, 660),
-	]), FLOOR_WOOD)
-	for i in range(1, 6):
-		var t := float(i) / 6.0
-		var y := lerpf(300.0, 660.0, t)
-		var lx := lerpf(220.0, 130.0, t)
-		var rx := lerpf(1060.0, 1150.0, t)
-		_poly(floor_node, PackedVector2Array([
-			Vector2(lx, y), Vector2(rx, y), Vector2(rx, y + 1.5), Vector2(lx, y + 1.5),
-		]), FLOOR_SEAM)
-
-
-func _build_light_pools() -> void:
-	# Cool spill from the living-room window onto the floor.
-	_poly(floor_node, PackedVector2Array([
-		Vector2(865, 268), Vector2(1025, 268), Vector2(1090, 620), Vector2(760, 620),
-	]), Color(0.45, 0.60, 0.85, 0.09))
-	# Warm pool around the floor lamp.
-	_circle(floor_node, Vector2(950, 470), 150.0, Color(1.0, 0.78, 0.50, 0.10))
-	# Warm pool near the entrance.
-	_circle(floor_node, Vector2(350, 360), 120.0, Color(1.0, 0.78, 0.50, 0.07))
-
-
 func _build_furniture() -> void:
-	# Rug under the sofa.
-	_rect(room, Rect2(360, 380, 300, 150), Color(0.25, 0.27, 0.29))
-	# Sofa.
-	_add_box(room, Vector2(430, 400), 200, 80, 46, Color(0.42, 0.46, 0.52), Color(0.34, 0.38, 0.44))
-	# Coffee table.
-	_add_box(room, Vector2(430, 480), 120, 55, 22, Color(0.55, 0.42, 0.28), Color(0.44, 0.33, 0.24))
-	# Kitchen counter along the back wall.
-	_add_box(room, Vector2(450, 306), 210, 55, 58, Color(0.50, 0.50, 0.52), Color(0.40, 0.40, 0.42))
-	# Dining table and two chairs.
-	_add_box(room, Vector2(830, 440), 140, 90, 26, Color(0.55, 0.42, 0.28), Color(0.44, 0.33, 0.24))
-	_add_box(room, Vector2(752, 436), 46, 46, 40, Color(0.42, 0.46, 0.52), Color(0.34, 0.38, 0.44))
-	_add_box(room, Vector2(908, 436), 46, 46, 40, Color(0.42, 0.46, 0.52), Color(0.34, 0.38, 0.44))
-	# Desk under the window.
-	_add_box(room, Vector2(940, 386), 130, 60, 26, Color(0.52, 0.40, 0.28), Color(0.42, 0.32, 0.24))
-	# Floor lamp.
-	_build_lamp()
-
-
-func _build_lamp() -> void:
-	var lamp := Node2D.new()
-	lamp.position = Vector2(950, 470)
-	_poly(lamp, PackedVector2Array([
-		Vector2(-2, -120), Vector2(2, -120), Vector2(2, 0), Vector2(-2, 0),
-	]), Color(0.30, 0.28, 0.26))
-	_rect(lamp, Rect2(-14, -2, 28, 6), Color(0.32, 0.30, 0.28))
-	_poly(lamp, PackedVector2Array([
-		Vector2(-26, -120), Vector2(26, -120), Vector2(18, -150), Vector2(-18, -150),
-	]), Color(1.0, 0.82, 0.55, 0.95))
-	room.add_child(lamp)
+	# 床（左侧，约 (150, 430)）
+	_add_obstacle(room, Vector2(150, 430), Vector2(180, 120))
+	# 衣柜（后墙中部，标定约 (700, 275)）
+	_add_obstacle(room, Vector2(700, 275), Vector2(110, 120))
+	# 茶几（中央小碰撞，标定 (500, 455) 压桌面）
+	_add_obstacle(room, Vector2(500, 455), Vector2(64, 40))
+	# 沙发（中右，标定 (770, 520) 压坐垫）
+	_add_obstacle(room, Vector2(770, 505), Vector2(160, 70))
+	# 书桌（右前，标定 (960, 435) 压桌面）
+	_add_obstacle(room, Vector2(960, 435), Vector2(120, 70))
 
 
 # ---------------------------------------------------------------------------
@@ -367,46 +236,33 @@ func _register(id: String, node: Node2D, prompt: String, text: String, radius: f
 
 
 func _build_interactables() -> void:
-	# Phone on the coffee table.
-	var phone := _add_box(room, Vector2(430, 468), 34, 16, 6, Color(0.12, 0.12, 0.15), Color(0.08, 0.08, 0.10))
-	_rect(phone, Rect2(-13, -13, 26, 10), Color(0.55, 0.70, 0.95, 0.9))
+	# 手机（背景图茶几在中央偏左约 (500,450)，热区改 (500,455)，半径 95）
+	var phone := Node2D.new()
+	phone.name = "Phone"
+	phone.position = Vector2(500, 455)
+	room.add_child(phone)
 	_register("phone", phone, "手机", "林夏：我在你楼下。", 95.0)
 
-	# Front door on the back wall.
+	# 门（背景图门在左后墙，门板约 (175,140)，热区改 (180,325)，半径 105）
 	var door := Node2D.new()
-	door.position = Vector2(290, 300)
-	_poly(door, PackedVector2Array([
-		Vector2(-33, -205), Vector2(33, -205), Vector2(33, 0), Vector2(-33, 0),
-	]), Color(0.33, 0.26, 0.20))
-	_poly(door, PackedVector2Array([
-		Vector2(-40, -210), Vector2(-33, -210), Vector2(-33, 0), Vector2(-40, 0),
-	]), Color(0.42, 0.34, 0.26))
-	_poly(door, PackedVector2Array([
-		Vector2(33, -210), Vector2(40, -210), Vector2(40, 0), Vector2(33, 0),
-	]), Color(0.42, 0.34, 0.26))
-	_rect(door, Rect2(20, -105, 5, 5), Color(0.85, 0.78, 0.60))
+	door.name = "Door"
+	door.position = Vector2(175, 335)
 	walls.add_child(door)
 	_register("door", door, "门", "门外只有雨声。", 105.0)
 
-	# Laptop on the desk.
-	var laptop := _add_box(room, Vector2(940, 372), 44, 26, 4, Color(0.16, 0.16, 0.20), Color(0.12, 0.12, 0.15))
-	_poly(laptop, PackedVector2Array([
-		Vector2(-20, -26), Vector2(20, -26), Vector2(20, 0), Vector2(-20, 0),
-	]), Color(0.13, 0.15, 0.20))
-	_rect(laptop, Rect2(-17, -23, 30, 16), Color(0.10, 0.12, 0.16))
+	# 笔记本（标定 (960,435) 压书桌桌面，热区放桌面中心，半径 95）
+	var laptop := Node2D.new()
+	laptop.name = "Laptop"
+	laptop.position = Vector2(940, 440)
+	room.add_child(laptop)
 	_register("laptop", laptop, "笔记本", "你的个人电脑，屏幕暗着。", 95.0)
 
-	# Framed photo on the back wall.
+	# 相框（背景图相框在中左墙约 (415,195)，热区改 (415,335)，半径 95）
 	var photo := Node2D.new()
-	photo.position = Vector2(615, 300)
-	_poly(photo, PackedVector2Array([
-		Vector2(-28, -78), Vector2(28, -78), Vector2(28, 0), Vector2(-28, 0),
-	]), Color(0.44, 0.36, 0.28))
-	_poly(photo, PackedVector2Array([
-		Vector2(-23, -72), Vector2(23, -72), Vector2(23, -6), Vector2(-23, -6),
-	]), Color(0.62, 0.60, 0.58))
+	photo.name = "Photo"
+	photo.position = Vector2(415, 335)
 	walls.add_child(photo)
-	_register("photo", photo, "照片", "一张有些褪色的合影。", 105.0)
+	_register("photo", photo, "照片", "一张有些褪色的合影。", 95.0)
 
 
 func _build_boundary() -> void:
@@ -774,7 +630,7 @@ func _reconstruct() -> void:
 	made_choice = Choice.NONE
 
 	# 玩家瞬移到手机旁
-	player.position = Vector2(430, 545)
+	player.position = Vector2(500, 545)
 	player.velocity = Vector2.ZERO
 
 	else_overlay.visible = false
@@ -800,7 +656,7 @@ func _update_rain(delta: float) -> void:
 		drop.position.x -= 16.0 * delta
 		if drop.position.y > 262.0:
 			drop.position.y = 124.0
-			drop.position.x = randf_range(872.0, 1018.0)
+			drop.position.x = randf_range(935.0, 1080.0)
 
 	if reconstruct_count >= 1:
 		for drop in _rain_anomaly:
@@ -808,4 +664,4 @@ func _update_rain(delta: float) -> void:
 			drop.position.x -= 28.0 * delta
 			if drop.position.y > 262.0:
 				drop.position.y = 124.0
-				drop.position.x = randf_range(920.0, 1022.0)
+				drop.position.x = randf_range(960.0, 1065.0)
