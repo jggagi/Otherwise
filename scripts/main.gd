@@ -40,6 +40,8 @@ var props_by_branch: Dictionary = {}
 
 # Milestone 3 新增：Anchor id 列表（跨重构持久的知识）
 var anchors: Array[String] = []
+# Milestone 3 新增：「没拆开的信」惊悚时刻是否已在模拟中被透露
+var letter_revealed: bool = false
 
 var interactables: Array[InteractableEntry] = []
 var current: InteractableEntry = null
@@ -405,6 +407,26 @@ func _build_interactables() -> void:
 	walls.add_child(photo)
 	_register("photo", photo, "照片", "一张有些褪色的合影。", 95.0)
 
+	# 信（书桌左前角，标定 (898,415)，半径 80；背景图未画出，用信封占位）
+	var letter := Node2D.new()
+	letter.name = "Letter"
+	letter.position = Vector2(898, 415)
+	var envelope := Polygon2D.new()
+	envelope.polygon = PackedVector2Array([
+		Vector2(-10.0, -6.0), Vector2(10.0, -6.0),
+		Vector2(10.0, 6.0), Vector2(-10.0, 6.0),
+	])
+	envelope.color = Color(0.83, 0.79, 0.68)
+	letter.add_child(envelope)
+	var envelope_flap := Polygon2D.new()
+	envelope_flap.polygon = PackedVector2Array([
+		Vector2(-10.0, -6.0), Vector2(10.0, -6.0), Vector2(0.0, 2.0),
+	])
+	envelope_flap.color = Color(0.72, 0.67, 0.55)
+	letter.add_child(envelope_flap)
+	room.add_child(letter)
+	_register("letter", letter, "信", "一封没拆开的信，压在桌角。", 80.0)
+
 
 func _build_boundary() -> void:
 	_add_wall(self, Vector2(220, 300), Vector2(1060, 300), 8.0)
@@ -710,6 +732,9 @@ func _branch_text(choice: Choice) -> String:
 	# 叠加（按优先级）：Anchor 领悟行 → 重构中的「信」台词
 	if anchors.has("fear_of_tomorrow"):
 		text += "\n你忽然明白：她不是在等一个答复，她是在害怕明天。"
+	if reconstruct_count >= 1 and choice == Choice.REPLY:
+		text += "\n林夏：「……你桌上那封信，一直没拆开吧。」"
+		letter_revealed = true
 	return text
 
 
@@ -740,6 +765,16 @@ func _return_to_room() -> void:
 
 	# 房间反映刚看过的分支留下的痕迹
 	_apply_branch_props(made_choice)
+	_update_letter_text()
+
+
+## 信被模拟中的林夏指认后，真实房间里的信变为惊悚确认文本。
+func _update_letter_text() -> void:
+	if not letter_revealed:
+		return
+	for entry in interactables:
+		if entry.id == "letter":
+			entry.text = "封口完好，从未拆开。可你盯着它，后背发凉——\nELSE 是怎么知道它在这里的？"
 
 
 func _get_choice_name(c: Choice) -> String:
