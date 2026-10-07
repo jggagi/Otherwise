@@ -1,7 +1,7 @@
 extends Node2D
-## Otherwise — Milestone 2 (ELSE 重构 / ELSE reconstruction).
-## Builds the apartment stage box: warm interior walls/floor, a rainy city
-## window, four interactables, the player, ELSE interface and minimal UI.
+## Otherwise — Milestone 3 (vertical slice: branch props, Anchors, the letter).
+## Builds the apartment stage box: warm interior, a rainy city window,
+## interactables, the player, ELSE interface and minimal UI.
 
 ## 游戏主状态
 enum State {
@@ -537,17 +537,24 @@ func _select_choice(choice: Choice) -> void:
 	prompt_label.visible = false
 	hint_label.visible = false
 
-	# 分支字幕内容（分行显示叙述与台词）
-	match choice:
-		Choice.DOWN:
-			branch_text_label.text = "你披上外套下楼。她站在单元门口，伞没撑开，发梢滴着水。\n林夏：「明天……你能陪我去车站吗？就这一次。」"
-		Choice.REPLY:
-			branch_text_label.text = "你回：「上来吧。」\n她进门，带着一身雨气，却没怎么说话。你倒水时发现，她的手机一直扣在桌上，屏幕分明还亮着。"
-		Choice.IGNORE:
-			branch_text_label.text = "你没有回复。后半夜你走到窗边，楼下的人影已经不见了。\n天亮时你在门口捡到一张被雨打湿的字条，只写着半句：「其实我明天要——」"
+	# 分支字幕内容（基础文本 + Anchor / 信等叠加，集中于 _branch_text）
+	branch_text_label.text = _branch_text(choice)
 
 	# 显示全屏黑色遮罩
 	overlay.visible = true
+
+
+## 分支演出文本：基础文本 + 叠加（Anchor 领悟行 → 重构中的「信」台词）。
+func _branch_text(choice: Choice) -> String:
+	var text := ""
+	match choice:
+		Choice.DOWN:
+			text = "你披上外套下楼。她站在单元门口，伞没撑开，发梢滴着水。\n林夏：「明天……你能陪我去车站吗？就这一次。」"
+		Choice.REPLY:
+			text = "你回：「上来吧。」\n她进门，带着一身雨气，却没怎么说话。你倒水时发现，她的手机一直扣在桌上，屏幕分明还亮着。"
+		Choice.IGNORE:
+			text = "你没有回复。后半夜你走到窗边，楼下的人影已经不见了。\n天亮时你在门口捡到一张被雨打湿的字条，只写着半句：「其实我明天要——」"
+	return text
 
 
 func _return_to_room() -> void:
