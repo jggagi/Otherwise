@@ -35,6 +35,9 @@ var seen_branches: Array[String] = []
 var reconstruct_count: int = 0
 var _is_reconstructing: bool = false
 
+# Milestone 3 新增：Choice -> Array[Node2D] 分支占位道具
+var props_by_branch: Dictionary = {}
+
 var interactables: Array[InteractableEntry] = []
 var current: InteractableEntry = null
 var message_time := 0.0
@@ -80,6 +83,7 @@ func _ready() -> void:
 	_build_walls()
 	_build_furniture()
 	_build_interactables()
+	_build_props()
 	_build_boundary()
 	_setup_player()
 	_setup_ui()
@@ -225,6 +229,139 @@ func _build_furniture() -> void:
 	_add_obstacle(room, Vector2(770, 505), Vector2(160, 70))
 	# 书桌（右前，标定 (960, 435) 压桌面）
 	_add_obstacle(room, Vector2(960, 435), Vector2(120, 70))
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3: branch props (placeholder geometry, hidden by default)
+# ---------------------------------------------------------------------------
+
+func _build_props() -> void:
+	# 回复分支：门口多一双鞋
+	var reply_shoes := Node2D.new()
+	reply_shoes.name = "PropShoes"
+	reply_shoes.position = Vector2(250, 352)
+	var shoe_color := Color(0.22, 0.17, 0.15)
+	for sx in [-8.0, 7.0]:
+		var shoe := Polygon2D.new()
+		shoe.polygon = PackedVector2Array([
+			Vector2(sx - 7.0, -4.0), Vector2(sx + 6.0, -5.0),
+			Vector2(sx + 8.0, 3.0), Vector2(sx - 6.0, 4.0),
+		])
+		shoe.color = shoe_color
+		reply_shoes.add_child(shoe)
+	reply_shoes.visible = false
+	room.add_child(reply_shoes)
+
+	# 回复分支：茶几上的第二个杯子
+	var reply_mug := Polygon2D.new()
+	reply_mug.name = "PropMug"
+	reply_mug.position = Vector2(538, 424)
+	reply_mug.polygon = PackedVector2Array([
+		Vector2(-6.0, -7.0), Vector2(6.0, -7.0),
+		Vector2(5.0, 7.0), Vector2(-5.0, 7.0),
+	])
+	reply_mug.color = Color(0.88, 0.85, 0.78)
+	var mug_rim := Polygon2D.new()
+	mug_rim.polygon = PackedVector2Array([
+		Vector2(-5.0, -7.0), Vector2(5.0, -7.0),
+		Vector2(4.0, -3.0), Vector2(-4.0, -3.0),
+	])
+	mug_rim.color = Color(0.55, 0.42, 0.30)
+	reply_mug.add_child(mug_rim)
+	reply_mug.visible = false
+	room.add_child(reply_mug)
+
+	# 回复分支：门口湿伞（带水渍）
+	var reply_umbrella := _make_closed_umbrella(Color(0.16, 0.20, 0.30), true)
+	reply_umbrella.name = "PropWetUmbrella"
+	reply_umbrella.position = Vector2(225, 320)
+	reply_umbrella.visible = false
+	room.add_child(reply_umbrella)
+
+	# 下楼分支：门口一把没撑开的伞靠墙
+	var down_umbrella := _make_closed_umbrella(Color(0.22, 0.20, 0.22), false)
+	down_umbrella.name = "PropDownUmbrella"
+	down_umbrella.position = Vector2(225, 320)
+	down_umbrella.visible = false
+	room.add_child(down_umbrella)
+
+	# 不回复分支：门口地上被雨打湿的字条
+	var ignore_note := Node2D.new()
+	ignore_note.name = "PropNote"
+	ignore_note.position = Vector2(245, 356)
+	var paper := Polygon2D.new()
+	paper.polygon = PackedVector2Array([
+		Vector2(-11.0, -6.0), Vector2(7.0, -8.0),
+		Vector2(11.0, 4.0), Vector2(-7.0, 7.0),
+	])
+	paper.color = Color(0.86, 0.84, 0.78)
+	ignore_note.add_child(paper)
+	var sheen := Polygon2D.new()
+	sheen.polygon = PackedVector2Array([
+		Vector2(-11.0, -6.0), Vector2(2.0, -7.0),
+		Vector2(-2.0, 2.0), Vector2(-7.0, 7.0),
+	])
+	sheen.color = Color(0.50, 0.62, 0.80, 0.45)
+	ignore_note.add_child(sheen)
+	ignore_note.visible = false
+	room.add_child(ignore_note)
+
+	props_by_branch = {
+		Choice.REPLY: [reply_shoes, reply_mug, reply_umbrella],
+		Choice.DOWN: [down_umbrella],
+		Choice.IGNORE: [ignore_note],
+	}
+
+
+## 造一把收拢靠墙的伞；wet=true 时在底部加一摊水渍。
+func _make_closed_umbrella(umbrella_color: Color, wet: bool) -> Node2D:
+	var g := Node2D.new()
+	g.rotation = deg_to_rad(16.0)
+
+	var shaft := Polygon2D.new()
+	shaft.polygon = PackedVector2Array([
+		Vector2(-2.0, -26.0), Vector2(2.0, -26.0),
+		Vector2(2.0, 22.0), Vector2(-2.0, 22.0),
+	])
+	shaft.color = umbrella_color
+	g.add_child(shaft)
+
+	var tip := Polygon2D.new()
+	tip.polygon = PackedVector2Array([
+		Vector2(-2.5, -26.0), Vector2(2.5, -26.0), Vector2(0.0, -34.0),
+	])
+	tip.color = umbrella_color.darkened(0.15)
+	g.add_child(tip)
+
+	var handle := Polygon2D.new()
+	handle.polygon = PackedVector2Array([
+		Vector2(-1.0, 20.0), Vector2(3.0, 20.0),
+		Vector2(3.0, 27.0), Vector2(-4.0, 27.0),
+		Vector2(-4.0, 23.0), Vector2(-1.0, 23.0),
+	])
+	handle.color = umbrella_color.darkened(0.25)
+	g.add_child(handle)
+
+	if wet:
+		var puddle := Polygon2D.new()
+		var pts := PackedVector2Array()
+		for i in range(14):
+			var a := TAU * float(i) / 14.0
+			pts.append(Vector2(cos(a) * 15.0, sin(a) * 4.5 + 26.0))
+		puddle.polygon = pts
+		puddle.color = Color(0.45, 0.58, 0.78, 0.40)
+		g.add_child(puddle)
+	return g
+
+
+## 隐藏全部道具，再显示指定分支的道具（Choice.NONE 表示清空）。
+func _apply_branch_props(choice: Choice) -> void:
+	for prop_list in props_by_branch.values():
+		for p in prop_list:
+			p.visible = false
+	var chosen: Array = props_by_branch.get(choice, [])
+	for p in chosen:
+		p.visible = true
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +706,9 @@ func _return_to_room() -> void:
 	hint_label.visible = true
 	player.set_physics_process(true)
 
+	# 房间反映刚看过的分支留下的痕迹
+	_apply_branch_props(made_choice)
+
 
 func _get_choice_name(c: Choice) -> String:
 	match c:
@@ -634,6 +774,7 @@ func _reconstruct() -> void:
 	# 房间回到决策时刻，之前分支结果视为未发生
 	reconstruct_count += 1
 	_apply_reconstruct_anomalies()
+	_apply_branch_props(Choice.NONE)
 	made_choice = Choice.NONE
 
 	# 玩家瞬移到手机旁
