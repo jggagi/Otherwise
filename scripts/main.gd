@@ -90,6 +90,7 @@ func _ready() -> void:
 	_build_furniture()
 	_build_interactables()
 	_build_props()
+	_build_occluders()
 	_build_boundary()
 	_setup_player()
 	_setup_ui()
@@ -225,16 +226,21 @@ func _build_rain() -> void:
 
 
 func _build_furniture() -> void:
-	# 床（左侧，约 (150, 430)）
-	_add_obstacle(room, Vector2(150, 430), Vector2(180, 120))
-	# 衣柜（后墙中部，标定约 (700, 275)）
-	_add_obstacle(room, Vector2(700, 275), Vector2(110, 120))
-	# 茶几（中央小碰撞，标定 (500, 455) 压桌面）
-	_add_obstacle(room, Vector2(500, 455), Vector2(64, 40))
-	# 沙发（中右，标定 (770, 520) 压坐垫）
-	_add_obstacle(room, Vector2(770, 505), Vector2(160, 70))
-	# 书桌（右前，标定 (960, 435) 压桌面）
-	_add_obstacle(room, Vector2(960, 435), Vector2(120, 70))
+	# 全部按背景图实际占地标定（坐标网格读数）。
+	# 床（左，含床头；占地 x48..295）
+	_add_obstacle(room, Vector2(171, 419), Vector2(247, 179))
+	# 床尾长凳
+	_add_obstacle(room, Vector2(338, 481), Vector2(97, 80))
+	# 衣柜（后墙，柜体正面约 y330..420）
+	_add_obstacle(room, Vector2(710, 374), Vector2(170, 88))
+	# 茶几（地毯中央，带腿）
+	_add_obstacle(room, Vector2(528, 467), Vector2(95, 68))
+	# 沙发（中右，x642..799）
+	_add_obstacle(room, Vector2(720, 508), Vector2(157, 80))
+	# 落地灯（沙发右侧）
+	_add_obstacle(room, Vector2(805, 528), Vector2(46, 36))
+	# 书桌（右前）
+	_add_obstacle(room, Vector2(921, 452), Vector2(162, 92))
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +329,37 @@ func _apply_branch_props(choice: Choice) -> void:
 # ---------------------------------------------------------------------------
 # Interactables
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Furniture occluders: same painted furniture re-drawn over the player via
+# YSort when the player walks north of it (extracted from the background
+# art by scripts/extract_occluders.ps1).
+# ---------------------------------------------------------------------------
+
+# 每件: 遮挡纹理 + 游戏内 bbox (x, y, w, h)，坐标由提取脚本打印。
+const OCC_SCALE := Vector2(1152.0 / 1376.0, 648.0 / 768.0)
+
+func _build_occluders() -> void:
+	var pieces := [
+		{ "tex": "res://assets/occluders/occ_bed.png", "box": Rect2(48.6, 315.6, 246.1, 178.9) },
+		{ "tex": "res://assets/occluders/occ_bench.png", "box": Rect2(290.5, 440.4, 96.3, 80.2) },
+		{ "tex": "res://assets/occluders/occ_table.png", "box": Rect2(476.4, 390.7, 103.8, 103.8) },
+		{ "tex": "res://assets/occluders/occ_sofa.png", "box": Rect2(642.1, 418.5, 156.6, 109.7) },
+		{ "tex": "res://assets/occluders/occ_desk.png", "box": Rect2(840.6, 388.1, 161.6, 92.0) },
+	]
+	for piece in pieces:
+		var box: Rect2 = piece["box"]
+		var wrapper := Node2D.new()
+		wrapper.name = "Occluder"
+		# YSort 排序锚点 = 家具前沿（y 最大处）。
+		wrapper.position = Vector2(box.position.x + box.size.x * 0.5, box.position.y + box.size.y)
+		var sprite := Sprite2D.new()
+		sprite.texture = load(piece["tex"])
+		sprite.scale = OCC_SCALE
+		sprite.position = Vector2(0.0, -box.size.y * 0.5)
+		wrapper.add_child(sprite)
+		room.add_child(wrapper)
+
 
 func _register(id: String, node: Node2D, prompt: String, text: String, radius: float) -> void:
 	interactables.append(InteractableEntry.new(id, node, prompt, text, radius))

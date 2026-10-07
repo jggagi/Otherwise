@@ -102,7 +102,11 @@ class CaptureDriver extends Node:
 				player._update_facing(Vector2(1, 0))   # 右侧（镜像）
 			290:
 				_shot("15_player_side_right")
-			298:
+			294:
+				player.global_position = Vector2(720, 460)   # 沙发北侧（沙发与衣柜之间）
+			302:
+				_shot("16_occlusion_behind_sofa")   # 角色身体被沙发遮挡
+			310:
 				get_tree().quit()
 
 	# 直接调用主脚本的输入处理，模拟按键。
