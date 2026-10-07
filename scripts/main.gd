@@ -38,6 +38,9 @@ var _is_reconstructing: bool = false
 # Milestone 3 新增：Choice -> Array[Node2D] 分支占位道具
 var props_by_branch: Dictionary = {}
 
+# Milestone 3 新增：Anchor id 列表（跨重构持久的知识）
+var anchors: Array[String] = []
+
 var interactables: Array[InteractableEntry] = []
 var current: InteractableEntry = null
 var message_time := 0.0
@@ -59,6 +62,7 @@ var else_title_label: Label
 var else_subtitle_label: Label
 var else_options_label: Label
 var else_history_label: Label
+var else_anchor_label: Label
 var else_hint_label: Label
 
 
@@ -584,6 +588,17 @@ func _setup_ui() -> void:
 	else_history_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 	else_box.add_child(else_history_label)
 
+	# Milestone 3: 金色 Anchor 展示（仅在获得后可见）
+	else_anchor_label = Label.new()
+	else_anchor_label.name = "Anchor"
+	else_anchor_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	else_anchor_label.text = ""
+	else_anchor_label.add_theme_font_size_override("font_size", 16)
+	else_anchor_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.35))
+	else_anchor_label.add_theme_constant_override("line_spacing", 6)
+	else_anchor_label.visible = false
+	else_box.add_child(else_anchor_label)
+
 	else_hint_label = Label.new()
 	else_hint_label.name = "ElseHint"
 	else_hint_label.anchor_left = 0.5
@@ -691,7 +706,23 @@ func _branch_text(choice: Choice) -> String:
 			text = "你回：「上来吧。」\n她进门，带着一身雨气，却没怎么说话。你倒水时发现，她的手机一直扣在桌上，屏幕分明还亮着。"
 		Choice.IGNORE:
 			text = "你没有回复。后半夜你走到窗边，楼下的人影已经不见了。\n天亮时你在门口捡到一张被雨打湿的字条，只写着半句：「其实我明天要——」"
+
+	# 叠加（按优先级）：Anchor 领悟行 → 重构中的「信」台词
+	if anchors.has("fear_of_tomorrow"):
+		text += "\n你忽然明白：她不是在等一个答复，她是在害怕明天。"
 	return text
+
+
+## 去重后体验过 ≥2 个分支时获得 fear_of_tomorrow Anchor（仅一次）。
+func _maybe_earn_anchor() -> void:
+	if anchors.has("fear_of_tomorrow"):
+		return
+	var unique_branches: Array[String] = []
+	for b in seen_branches:
+		if not unique_branches.has(b):
+			unique_branches.append(b)
+	if unique_branches.size() >= 2:
+		anchors.append("fear_of_tomorrow")
 
 
 func _return_to_room() -> void:
@@ -699,6 +730,7 @@ func _return_to_room() -> void:
 	var branch_name := _get_choice_name(made_choice)
 	if branch_name != "":
 		seen_branches.append(branch_name)
+	_maybe_earn_anchor()
 
 	overlay.visible = false
 	current_state = State.NORMAL
@@ -742,6 +774,13 @@ func _open_else() -> void:
 	else:
 		else_history_label.text = "已体验的分支：" + "、".join(unique_branches)
 		else_history_label.visible = true
+
+	# Anchor（金色，置于已体验分支下方）
+	if anchors.is_empty():
+		else_anchor_label.visible = false
+	else:
+		else_anchor_label.text = "ANCHOR\n她不是因为你没有下楼而生气。\n她是在害怕明天。"
+		else_anchor_label.visible = true
 
 	else_box.visible = true
 	else_hint_label.visible = true
