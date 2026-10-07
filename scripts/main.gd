@@ -238,77 +238,48 @@ func _build_furniture() -> void:
 
 
 # ---------------------------------------------------------------------------
-# Milestone 3: branch props (placeholder geometry, hidden by default)
+# Milestone 3: branch props (Antigravity-generated sprites, hidden by default)
 # ---------------------------------------------------------------------------
+
+## 造一个道具精灵：加载纹理，等比缩放进 target 框，居中于 pos。
+func _make_prop_sprite(tex_path: String, pos: Vector2, target: Vector2) -> Sprite2D:
+	var s := Sprite2D.new()
+	var tex: Texture2D = load(tex_path)
+	s.texture = tex
+	if tex != null:
+		var k: float = minf(target.x / tex.get_width(), target.y / tex.get_height())
+		s.scale = Vector2(k, k)
+	s.position = pos
+	return s
+
 
 func _build_props() -> void:
 	# 回复分支：门口多一双鞋
-	var reply_shoes := Node2D.new()
+	var reply_shoes := _make_prop_sprite("res://assets/props/prop_shoes.png", Vector2(250, 352), Vector2(34, 30))
 	reply_shoes.name = "PropShoes"
-	reply_shoes.position = Vector2(250, 352)
-	var shoe_color := Color(0.22, 0.17, 0.15)
-	for sx in [-8.0, 7.0]:
-		var shoe := Polygon2D.new()
-		shoe.polygon = PackedVector2Array([
-			Vector2(sx - 7.0, -4.0), Vector2(sx + 6.0, -5.0),
-			Vector2(sx + 8.0, 3.0), Vector2(sx - 6.0, 4.0),
-		])
-		shoe.color = shoe_color
-		reply_shoes.add_child(shoe)
 	reply_shoes.visible = false
 	room.add_child(reply_shoes)
 
 	# 回复分支：茶几上的第二个杯子
-	var reply_mug := Polygon2D.new()
+	var reply_mug := _make_prop_sprite("res://assets/props/prop_mug.png", Vector2(545, 422), Vector2(13, 15))
 	reply_mug.name = "PropMug"
-	reply_mug.position = Vector2(545, 422)
-	reply_mug.polygon = PackedVector2Array([
-		Vector2(-6.0, -7.0), Vector2(6.0, -7.0),
-		Vector2(5.0, 7.0), Vector2(-5.0, 7.0),
-	])
-	reply_mug.color = Color(0.88, 0.85, 0.78)
-	var mug_rim := Polygon2D.new()
-	mug_rim.polygon = PackedVector2Array([
-		Vector2(-5.0, -7.0), Vector2(5.0, -7.0),
-		Vector2(4.0, -3.0), Vector2(-4.0, -3.0),
-	])
-	mug_rim.color = Color(0.55, 0.42, 0.30)
-	reply_mug.add_child(mug_rim)
 	reply_mug.visible = false
 	room.add_child(reply_mug)
 
 	# 回复分支：门口湿伞（带水渍）
-	var reply_umbrella := _make_closed_umbrella(Color(0.16, 0.20, 0.30), true)
+	var reply_umbrella := _make_wet_umbrella()
 	reply_umbrella.name = "PropWetUmbrella"
-	reply_umbrella.position = Vector2(225, 320)
-	reply_umbrella.visible = false
 	room.add_child(reply_umbrella)
 
 	# 下楼分支：门口一把没撑开的伞靠墙
-	var down_umbrella := _make_closed_umbrella(Color(0.22, 0.20, 0.22), false)
+	var down_umbrella := _make_prop_sprite("res://assets/props/prop_umbrella_dry.png", Vector2(225, 320), Vector2(27, 66))
 	down_umbrella.name = "PropDownUmbrella"
-	down_umbrella.position = Vector2(225, 320)
 	down_umbrella.visible = false
 	room.add_child(down_umbrella)
 
 	# 不回复分支：门口地上被雨打湿的字条
-	var ignore_note := Node2D.new()
+	var ignore_note := _make_prop_sprite("res://assets/props/prop_note.png", Vector2(245, 356), Vector2(28, 23))
 	ignore_note.name = "PropNote"
-	ignore_note.position = Vector2(245, 356)
-	var paper := Polygon2D.new()
-	paper.polygon = PackedVector2Array([
-		Vector2(-11.0, -6.0), Vector2(7.0, -8.0),
-		Vector2(11.0, 4.0), Vector2(-7.0, 7.0),
-	])
-	paper.color = Color(0.86, 0.84, 0.78)
-	ignore_note.add_child(paper)
-	var sheen := Polygon2D.new()
-	sheen.polygon = PackedVector2Array([
-		Vector2(-11.0, -6.0), Vector2(2.0, -7.0),
-		Vector2(-2.0, 2.0), Vector2(-7.0, 7.0),
-	])
-	sheen.color = Color(0.50, 0.62, 0.80, 0.45)
-	ignore_note.add_child(sheen)
 	ignore_note.visible = false
 	room.add_child(ignore_note)
 
@@ -319,44 +290,23 @@ func _build_props() -> void:
 	}
 
 
-## 造一把收拢靠墙的伞；wet=true 时在底部加一摊水渍。
-func _make_closed_umbrella(umbrella_color: Color, wet: bool) -> Node2D:
+## 门口湿伞：收拢伞精灵（自带约 20° 倚靠倾角）+ 底部一摊水渍。
+func _make_wet_umbrella() -> Node2D:
 	var g := Node2D.new()
-	g.rotation = deg_to_rad(16.0)
+	g.position = Vector2(225, 320)
+	var sprite := _make_prop_sprite("res://assets/props/prop_umbrella_wet.png", Vector2.ZERO, Vector2(30, 66))
+	g.add_child(sprite)
 
-	var shaft := Polygon2D.new()
-	shaft.polygon = PackedVector2Array([
-		Vector2(-2.0, -26.0), Vector2(2.0, -26.0),
-		Vector2(2.0, 22.0), Vector2(-2.0, 22.0),
-	])
-	shaft.color = umbrella_color
-	g.add_child(shaft)
+	var puddle := Polygon2D.new()
+	var pts := PackedVector2Array()
+	for i in range(14):
+		var a := TAU * float(i) / 14.0
+		pts.append(Vector2(cos(a) * 16.0 - 9.0, sin(a) * 5.0 + 31.0))
+	puddle.polygon = pts
+	puddle.color = Color(0.45, 0.58, 0.78, 0.40)
+	g.add_child(puddle)
 
-	var tip := Polygon2D.new()
-	tip.polygon = PackedVector2Array([
-		Vector2(-2.5, -26.0), Vector2(2.5, -26.0), Vector2(0.0, -34.0),
-	])
-	tip.color = umbrella_color.darkened(0.15)
-	g.add_child(tip)
-
-	var handle := Polygon2D.new()
-	handle.polygon = PackedVector2Array([
-		Vector2(-1.0, 20.0), Vector2(3.0, 20.0),
-		Vector2(3.0, 27.0), Vector2(-4.0, 27.0),
-		Vector2(-4.0, 23.0), Vector2(-1.0, 23.0),
-	])
-	handle.color = umbrella_color.darkened(0.25)
-	g.add_child(handle)
-
-	if wet:
-		var puddle := Polygon2D.new()
-		var pts := PackedVector2Array()
-		for i in range(14):
-			var a := TAU * float(i) / 14.0
-			pts.append(Vector2(cos(a) * 15.0, sin(a) * 4.5 + 26.0))
-		puddle.polygon = pts
-		puddle.color = Color(0.45, 0.58, 0.78, 0.40)
-		g.add_child(puddle)
+	g.visible = false
 	return g
 
 
@@ -407,23 +357,12 @@ func _build_interactables() -> void:
 	walls.add_child(photo)
 	_register("photo", photo, "照片", "一张有些褪色的合影。", 95.0)
 
-	# 信（书桌左前角，标定 (898,415)，半径 80；背景图未画出，用信封占位）
+	# 信（书桌左前角，标定 (898,415)，半径 80；信封精灵常显）
 	var letter := Node2D.new()
 	letter.name = "Letter"
 	letter.position = Vector2(898, 415)
-	var envelope := Polygon2D.new()
-	envelope.polygon = PackedVector2Array([
-		Vector2(-10.0, -6.0), Vector2(10.0, -6.0),
-		Vector2(10.0, 6.0), Vector2(-10.0, 6.0),
-	])
-	envelope.color = Color(0.83, 0.79, 0.68)
+	var envelope := _make_prop_sprite("res://assets/props/prop_envelope.png", Vector2.ZERO, Vector2(24, 18))
 	letter.add_child(envelope)
-	var envelope_flap := Polygon2D.new()
-	envelope_flap.polygon = PackedVector2Array([
-		Vector2(-10.0, -6.0), Vector2(10.0, -6.0), Vector2(0.0, 2.0),
-	])
-	envelope_flap.color = Color(0.72, 0.67, 0.55)
-	letter.add_child(envelope_flap)
 	room.add_child(letter)
 	_register("letter", letter, "信", "一封没拆开的信，压在桌角。", 80.0)
 
