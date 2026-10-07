@@ -28,13 +28,13 @@ class CaptureDriver extends Node:
 			10:
 				_shot("00_room_overview")          # 重构前：窗户只有一组雨丝
 			14:
-				player.global_position = Vector2(940, 460)  # 笔记本旁
+				player.global_position = Vector2(940, 500)  # 笔记本旁（书桌正前方）
 			22:
 				_key(KEY_E)                        # 未做选择：笔记本保持普通文案
 			28:
 				_shot("01_laptop_before_choice")   # 门控验证
 			36:
-				player.global_position = Vector2(430, 545)  # 手机旁
+				player.global_position = Vector2(500, 490)  # 手机旁（茶几南侧）
 			44:
 				_key(KEY_E)                       # 打开手机选项
 			52:
@@ -46,7 +46,7 @@ class CaptureDriver extends Node:
 			72:
 				_key(KEY_SPACE)                   # 返回房间
 			80:
-				player.global_position = Vector2(940, 460)  # 笔记本旁
+				player.global_position = Vector2(940, 500)  # 笔记本旁（书桌正前方）
 			88:
 				_key(KEY_E)                       # 做过选择后：ELSE 界面
 			96:
@@ -64,7 +64,7 @@ class CaptureDriver extends Node:
 			178:
 				_key(KEY_SPACE)                   # 返回房间
 			186:
-				player.global_position = Vector2(940, 460)  # 笔记本旁
+				player.global_position = Vector2(940, 500)  # 笔记本旁（书桌正前方）
 			194:
 				_key(KEY_E)                       # 二次打开 ELSE
 			202:
@@ -72,7 +72,7 @@ class CaptureDriver extends Node:
 			208:
 				_key(KEY_2)                       # NOT NOW 关闭
 			216:
-				player.global_position = Vector2(615, 390)  # 照片旁
+				player.global_position = Vector2(415, 385)  # 相框下（新热区）
 			224:
 				_key(KEY_E)                       # 重构后照片异常文案
 			232:
@@ -80,7 +80,7 @@ class CaptureDriver extends Node:
 			244:
 				_shot("10_rain_anomaly")          # 大窗第二组斜浅雨丝
 			248:
-				player.global_position = Vector2(290, 390)  # 门口
+				player.global_position = Vector2(275, 350)  # 门热区内、床碰撞安全距离外
 			256:
 				_key(KEY_E)                       # 门交互（回归检查）
 			264:
