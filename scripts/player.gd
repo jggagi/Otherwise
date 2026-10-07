@@ -1,9 +1,10 @@
 extends CharacterBody2D
-## Protagonist sprite: per-direction idle/walk frames with a walk bob.
+## Protagonist sprite: per-direction idle/walk frames.
 ## Eight-directional WASD / arrow movement. The facing picks the closest
 ## of three views (front / back / side; the side view is mirrored for
-## rightward movement). Walk frames are swapped on a timer and a subtle
-## vertical bob sells the step; collision stays small for navigation.
+## rightward movement). Walk frames are pre-aligned in the art pipeline
+## (identical canvas, silhouette-IoU anchored), so swapping them never
+## slides or resizes the body. Collision stays small for navigation.
 
 @export var speed: float = 220.0
 
@@ -11,10 +12,8 @@ extends CharacterBody2D
 const TARGET_HEIGHT := 200.0
 ## 脚底相对节点原点的落点（与旧占位脚位一致）。
 const GROUND_Y := 2.0
-## 走路帧切换间隔（秒）与步伐频率（Hz，用于身体起伏）。
-const FRAME_TIME := 0.16
-const STRIDE_HZ := 2.2
-const BOB_AMOUNT := 2.2
+## 走路帧切换间隔（秒）。
+const FRAME_TIME := 0.22
 
 var _shadow: Polygon2D
 var _body: Sprite2D
@@ -23,10 +22,9 @@ var _walk: Dictionary = {}   # facing -> Array[Texture2D]
 
 var _facing: String = "front"
 var _flip: bool = false
-var _moving: bool = false
+var _moving_anim: bool = false
 var _frame_timer: float = 0.0
 var _frame_i: int = 0
-var _phase: float = 0.0
 
 
 func _ready() -> void:
@@ -35,31 +33,34 @@ func _ready() -> void:
 		"back": load("res://assets/player/player_back.png"),
 		"side": load("res://assets/player/player_side.png"),
 	}
-	# 目前只有正面有真走路帧；其余方向待配额恢复后补齐。
+	# 背面走路帧待配额恢复后补齐；补齐后填入数组即可，无需改逻辑。
 	_walk = {
 		"front": [
 			load("res://assets/player/walk_front_a.png"),
 			load("res://assets/player/walk_front_b.png"),
 		],
 		"back": [],
-		"side": [],
+		"side": [
+			load("res://assets/player/walk_side_a.png"),
+			load("res://assets/player/walk_side_b.png"),
+		],
 	}
 	_build_body()
 
 
 func _build_body() -> void:
-	# Soft grounding shadow.
+	# Soft grounding shadow (static).
 	_shadow = Polygon2D.new()
 	_shadow.polygon = _circle_points(34.0, 24)
 	_shadow.color = Color(0.0, 0.0, 0.0, 0.26)
 	_shadow.position = Vector2(0.0, 7.0)
 	add_child(_shadow)
 
-	# Character sprite (frames managed by _show_texture).
+	# Character sprite (frames managed by _show_frame).
 	_body = Sprite2D.new()
 	_body.name = "Body"
 	add_child(_body)
-	_show_texture(_idle["front"], false, 0.0)
+	_show_frame()
 
 	# Collision capsule (invisible; kept small for navigation).
 	var collision := CollisionShape2D.new()
@@ -81,45 +82,33 @@ func _physics_process(delta: float) -> void:
 	if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
 		direction.x += 1.0
 
-	_moving = direction.length_squared() > 0.0
-	var bob := 0.0
-	if _moving:
+	var moving: bool = direction.length_squared() > 0.0
+	if moving:
 		direction = direction.normalized()
+		_moving_anim = true
 		_update_facing(direction)
 		_advance_walk(delta)
-		_phase += delta * STRIDE_HZ * TAU
-		bob = -absf(sin(_phase)) * BOB_AMOUNT
-		# 侧面走路轻微前倾；纵向时细微左右晃。
-		if _facing == "side":
-			_body.rotation = lerp(_body.rotation, 0.04, 0.2)
-		# 阴影随步伐轻微脉动。
-		var pulse := 1.0 + 0.05 * absf(sin(_phase))
-		_shadow.scale = Vector2(pulse, pulse)
 	else:
 		_set_idle()
-		_body.rotation = lerp(_body.rotation, 0.0, 0.2)
-		_shadow.scale = _shadow.scale.lerp(Vector2.ONE, 0.2)
-
-	var tex: Texture2D = _body.texture
-	if tex != null:
-		var k: float = TARGET_HEIGHT / tex.get_height()
-		_body.scale = Vector2(k, k)
-		_body.position = Vector2(0.0, GROUND_Y - tex.get_height() * k * 0.5 + bob)
 
 	velocity = direction * speed
 	move_and_slide()
 
 
-## 切换贴图（含镜像），并按其自身高度等比缩放、脚底对齐。
-func _show_texture(tex: Texture2D, flip: bool, bob: float) -> void:
+## 按贴图当前高度等比缩放、脚底对齐。
+func _show_frame() -> void:
+	var tex: Texture2D
+	if _moving_anim and (_walk[_facing].size() >= 2):
+		tex = _walk[_facing][_frame_i]
+	else:
+		tex = _idle[_facing]
 	if tex == null or _body == null:
 		return
 	_body.texture = tex
-	_body.flip_h = flip
-	_flip = flip
-	var k: float = TARGET_HEIGHT / tex.get_height()
+	_body.flip_h = _flip
+	var k: float = TARGET_HEIGHT / float(tex.get_height())
 	_body.scale = Vector2(k, k)
-	_body.position = Vector2(0.0, GROUND_Y - tex.get_height() * k * 0.5 + bob)
+	_body.position = Vector2(0.0, GROUND_Y - float(tex.get_height()) * k * 0.5)
 
 
 ## 按移动方向取最近视角：横移用侧面（右移镜像），纵移用正面/背面。
@@ -138,29 +127,28 @@ func _update_facing(dir: Vector2) -> void:
 		_facing = new_facing
 		_frame_i = 0
 		_frame_timer = 0.0
-		_show_texture(_idle[_facing], _flip, 0.0)
+		_show_frame()
 	else:
 		_body.flip_h = _flip
 
 
-## 走路帧推进：有真帧时定时切换；无帧时保持待机（靠起伏表现）。
+## 走路帧推进：定时循环切换。
 func _advance_walk(delta: float) -> void:
-	var frames: Array = _walk[_facing]
-	if frames.size() < 2:
+	if _walk[_facing].size() < 2:
 		return
 	_frame_timer += delta
 	if _frame_timer >= FRAME_TIME:
-		_frame_timer = 0.0
-		_frame_i = (_frame_i + 1) % frames.size()
-		_show_texture(frames[_frame_i], _flip, 0.0)
+		_frame_timer -= FRAME_TIME
+		_frame_i = (_frame_i + 1) % _walk[_facing].size()
+		_show_frame()
 
 
 ## 停下：回到当前方向待机帧。
 func _set_idle() -> void:
-	if _frame_i != 0 or _body.texture != _idle[_facing]:
-		_frame_i = 0
-		_frame_timer = 0.0
-		_show_texture(_idle[_facing], _flip, 0.0)
+	_moving_anim = false
+	_frame_i = 0
+	_frame_timer = 0.0
+	_show_frame()
 
 
 func _circle_points(radius: float, segments: int) -> PackedVector2Array:

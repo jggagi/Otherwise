@@ -86,28 +86,42 @@ class CaptureDriver extends Node:
 				_key(KEY_2)                        # NOT NOW 关闭
 			258:
 				player.global_position = Vector2(620, 570)   # 空地展示朝向
+				player.set_physics_process(false)             # 冻结物理，精确控制帧
 			262:
-				player._update_facing(Vector2(0, 1))   # 正面（朝镜头）
+				_show_player_frame(player, "front", false, 0)   # 正面·走路A
 			266:
 				_shot("12_player_front")
 			270:
-				player._update_facing(Vector2(0, -1))  # 背面
+				_show_player_frame(player, "back", false, 0)    # 背面·待机（走路帧待补）
 			274:
 				_shot("13_player_back")
 			278:
-				player._update_facing(Vector2(-1, 0))  # 左侧
+				_show_player_frame(player, "side", false, 0)    # 左侧·走路A
 			282:
 				_shot("14_player_side_left")
 			286:
-				player._update_facing(Vector2(1, 0))   # 右侧（镜像）
+				_show_player_frame(player, "side", true, 0)     # 右侧·镜像
 			290:
 				_shot("15_player_side_right")
 			294:
 				player.global_position = Vector2(720, 460)   # 沙发北侧（沙发与衣柜之间）
 			302:
 				_shot("16_occlusion_behind_sofa")   # 角色身体被沙发遮挡
-			310:
+			306:
+				player.global_position = Vector2(620, 570)
+				_show_player_frame(player, "front", false, 1)   # 正面·走路B（与帧12对照）
+			312:
+				_shot("17_player_front_walk_b")
+			318:
 				get_tree().quit()
+
+	# 强制玩家展示指定朝向/帧（物理已冻结）。
+	func _show_player_frame(player: CharacterBody2D, facing: String, flip: bool, frame_i: int) -> void:
+		player._facing = facing
+		player._flip = flip
+		player._frame_i = frame_i
+		player._moving_anim = true
+		player._show_frame()
 
 	# 直接调用主脚本的输入处理，模拟按键。
 	func _key(k: Key) -> void:
