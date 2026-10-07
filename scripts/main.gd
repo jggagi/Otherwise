@@ -1,7 +1,7 @@
 extends Node2D
-## Otherwise — Milestone 1 (第一个选择 / The first choice).
+## Otherwise — Milestone 2 (ELSE 重构 / ELSE reconstruction).
 ## Builds the apartment stage box: warm interior walls/floor, a rainy city
-## window, four interactables, the player and the minimal UI.
+## window, four interactables, the player, ELSE interface and minimal UI.
 
 const VOID := Color(0.03, 0.045, 0.07)
 const WALL_BACK := Color(0.55, 0.49, 0.43)
@@ -16,6 +16,7 @@ enum State {
 	NORMAL,       # 自由探索房间
 	CHOICE,       # 手机分支选择中
 	BRANCH_VIEW,  # 分支剧情全屏黑屏展示中
+	ELSE,         # 笔记本 ELSE 重构界面
 }
 
 ## 手机第一个选择的三个分支
@@ -37,18 +38,33 @@ enum Choice {
 var current_state: State = State.NORMAL
 var made_choice: Choice = Choice.NONE
 
+# Milestone 2 新增状态记录
+var seen_branches: Array[String] = []
+var reconstruct_count: int = 0
+var _is_reconstructing: bool = false
+
 var interactables: Array[InteractableEntry] = []
 var current: InteractableEntry = null
 var message_time := 0.0
 var message_duration := 3.5
 
 var _rain: Array[Polygon2D] = []
+var _rain_anomaly: Array[Polygon2D] = []
 
 # Milestone 1 新增 UI 节点
 var choices_label: Label
 var overlay: ColorRect
 var branch_text_label: Label
 var continue_hint_label: Label
+
+# Milestone 2 新增 UI 节点
+var else_overlay: ColorRect
+var else_box: VBoxContainer
+var else_title_label: Label
+var else_subtitle_label: Label
+var else_options_label: Label
+var else_history_label: Label
+var else_hint_label: Label
 
 
 class InteractableEntry:
@@ -99,8 +115,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			if (key == KEY_E or key_code == KEY_E) and current != null:
 				if current.id == "phone":
 					_open_choice()
+				elif current.id == "laptop" and made_choice != Choice.NONE:
+					_open_else()
 				else:
-					_show_message(current.text)
+					var text_to_show := current.text
+					if current.id == "photo" and reconstruct_count >= 1:
+						text_to_show = "一张有些褪色的合影。照片里的笑容，好像比记忆里淡了一点。"
+					_show_message(text_to_show)
 		State.CHOICE:
 			if key == KEY_1 or key == KEY_KP_1 or key_code == KEY_1 or key_code == KEY_KP_1:
 				_select_choice(Choice.DOWN)
@@ -113,6 +134,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		State.BRANCH_VIEW:
 			if key == KEY_E or key == KEY_SPACE or key_code == KEY_E or key_code == KEY_SPACE:
 				_return_to_room()
+		State.ELSE:
+			if _is_reconstructing:
+				return
+			if key == KEY_1 or key == KEY_KP_1 or key_code == KEY_1 or key_code == KEY_KP_1:
+				_reconstruct()
+			elif key == KEY_2 or key == KEY_KP_2 or key_code == KEY_2 or key_code == KEY_KP_2:
+				_close_else()
+			elif key == KEY_ESCAPE or key_code == KEY_ESCAPE:
+				_close_else()
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +284,21 @@ func _build_rain() -> void:
 		drop.position = Vector2(randf_range(872.0, 1018.0), randf_range(126.0, 260.0))
 		walls.add_child(drop)
 		_rain.append(drop)
+
+	# Milestone 2 视觉异常：第二组略微倾斜、颜色更浅、偏右的雨丝（仅重构后可见）
+	for i in range(12):
+		var drop := Polygon2D.new()
+		var dh := 7.0 + float(i % 3) * 3.5
+		drop.polygon = PackedVector2Array([
+			Vector2(-0.8, -dh * 0.5), Vector2(0.8, -dh * 0.5),
+			Vector2(0.8, dh * 0.5), Vector2(-0.8, dh * 0.5),
+		])
+		drop.rotation = deg_to_rad(-12.0)
+		drop.color = Color(0.75, 0.82, 0.95, 0.28)
+		drop.position = Vector2(randf_range(920.0, 1022.0), randf_range(126.0, 260.0))
+		drop.visible = false
+		walls.add_child(drop)
+		_rain_anomaly.append(drop)
 
 
 func _build_floor() -> void:
@@ -406,8 +451,8 @@ func _setup_ui() -> void:
 	message_label.anchor_right = 0.5
 	message_label.anchor_top = 0.82
 	message_label.anchor_bottom = 0.82
-	message_label.offset_left = -360.0
-	message_label.offset_right = 360.0
+	message_label.offset_left = -480.0
+	message_label.offset_right = 480.0
 	message_label.offset_top = -24.0
 	message_label.offset_bottom = 24.0
 	message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -482,6 +527,86 @@ func _setup_ui() -> void:
 	continue_hint_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 	overlay.add_child(continue_hint_label)
 
+	# Milestone 2: ELSE 全屏界面与布局
+	else_overlay = ColorRect.new()
+	else_overlay.name = "ElseOverlay"
+	else_overlay.color = Color(0.0, 0.0, 0.0, 1.0)
+	else_overlay.anchor_left = 0.0
+	else_overlay.anchor_top = 0.0
+	else_overlay.anchor_right = 1.0
+	else_overlay.anchor_bottom = 1.0
+	else_overlay.offset_left = 0.0
+	else_overlay.offset_top = 0.0
+	else_overlay.offset_right = 0.0
+	else_overlay.offset_bottom = 0.0
+	else_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	else_overlay.visible = false
+	$UI.add_child(else_overlay)
+
+	else_box = VBoxContainer.new()
+	else_box.name = "ElseBox"
+	else_box.anchor_left = 0.5
+	else_box.anchor_right = 0.5
+	else_box.anchor_top = 0.44
+	else_box.anchor_bottom = 0.44
+	else_box.offset_left = -360.0
+	else_box.offset_right = 360.0
+	else_box.offset_top = -170.0
+	else_box.offset_bottom = 170.0
+	else_box.alignment = BoxContainer.ALIGNMENT_CENTER
+	else_box.add_theme_constant_override("separation", 22)
+	else_overlay.add_child(else_box)
+
+	else_title_label = Label.new()
+	else_title_label.name = "Title"
+	else_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	else_title_label.text = "ELSE"
+	else_title_label.add_theme_font_size_override("font_size", 28)
+	else_title_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.97))
+	else_box.add_child(else_title_label)
+
+	else_subtitle_label = Label.new()
+	else_subtitle_label.name = "Subtitle"
+	else_subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	else_subtitle_label.text = "Unresolved decision detected.\n重构另一种可能？"
+	else_subtitle_label.add_theme_font_size_override("font_size", 19)
+	else_subtitle_label.add_theme_color_override("font_color", Color(0.78, 0.82, 0.88))
+	else_subtitle_label.add_theme_constant_override("line_spacing", 8)
+	else_box.add_child(else_subtitle_label)
+
+	else_options_label = Label.new()
+	else_options_label.name = "Options"
+	else_options_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	else_options_label.text = "[ 1 ] RECONSTRUCT  重构\n[ 2 ] NOT NOW      暂不"
+	else_options_label.add_theme_font_size_override("font_size", 20)
+	else_options_label.add_theme_color_override("font_color", Color(0.92, 0.92, 0.96))
+	else_options_label.add_theme_constant_override("line_spacing", 12)
+	else_box.add_child(else_options_label)
+
+	else_history_label = Label.new()
+	else_history_label.name = "History"
+	else_history_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	else_history_label.text = ""
+	else_history_label.add_theme_font_size_override("font_size", 15)
+	else_history_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	else_box.add_child(else_history_label)
+
+	else_hint_label = Label.new()
+	else_hint_label.name = "ElseHint"
+	else_hint_label.anchor_left = 0.5
+	else_hint_label.anchor_right = 0.5
+	else_hint_label.anchor_top = 0.88
+	else_hint_label.anchor_bottom = 0.88
+	else_hint_label.offset_left = -200.0
+	else_hint_label.offset_right = 200.0
+	else_hint_label.offset_top = -15.0
+	else_hint_label.offset_bottom = 15.0
+	else_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	else_hint_label.text = "按 1 / 2 选择 · ESC 取消"
+	else_hint_label.add_theme_font_size_override("font_size", 16)
+	else_hint_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	else_overlay.add_child(else_hint_label)
+
 
 # ---------------------------------------------------------------------------
 # Interaction, message and rain updates
@@ -535,6 +660,7 @@ func _open_choice() -> void:
 	choices_label.text = "[1] 下楼\n[2] 回复\n[3] 不回复"
 	choices_label.visible = true
 	hint_label.text = "按 1 / 2 / 3 做出选择 · ESC 取消"
+	hint_label.visible = true
 
 
 func _close_choice() -> void:
@@ -569,11 +695,103 @@ func _select_choice(choice: Choice) -> void:
 
 
 func _return_to_room() -> void:
+	# 每完整看过一个分支演出就追加该分支名
+	var branch_name := _get_choice_name(made_choice)
+	if branch_name != "":
+		seen_branches.append(branch_name)
+
 	overlay.visible = false
 	current_state = State.NORMAL
 	hint_label.text = "WASD / 方向键 移动 · E 交互"
 	hint_label.visible = true
 	player.set_physics_process(true)
+
+
+func _get_choice_name(c: Choice) -> String:
+	match c:
+		Choice.DOWN:
+			return "下楼"
+		Choice.REPLY:
+			return "回复"
+		Choice.IGNORE:
+			return "不回复"
+		_:
+			return ""
+
+
+func _open_else() -> void:
+	current_state = State.ELSE
+	prompt_label.visible = false
+	message_label.visible = false
+	hint_label.visible = false
+	player.set_physics_process(false)
+	player.velocity = Vector2.ZERO
+
+	# 去重列出已体验的分支
+	var unique_branches: Array[String] = []
+	for b in seen_branches:
+		if not unique_branches.has(b):
+			unique_branches.append(b)
+
+	if unique_branches.is_empty():
+		else_history_label.text = ""
+		else_history_label.visible = false
+	else:
+		else_history_label.text = "已体验的分支：" + "、".join(unique_branches)
+		else_history_label.visible = true
+
+	else_box.visible = true
+	else_hint_label.visible = true
+	else_overlay.visible = true
+
+
+func _close_else() -> void:
+	if _is_reconstructing:
+		return
+	else_overlay.visible = false
+	current_state = State.NORMAL
+	hint_label.text = "WASD / 方向键 移动 · E 交互"
+	hint_label.visible = true
+	player.set_physics_process(true)
+
+
+func _reconstruct() -> void:
+	if _is_reconstructing:
+		return
+	_is_reconstructing = true
+
+	# 隐藏文本内容，留出纯黑屏幕停顿约 0.8 秒
+	else_box.visible = false
+	else_hint_label.visible = false
+
+	await get_tree().create_timer(0.8).timeout
+	if not is_inside_tree():
+		return
+
+	# 房间回到决策时刻，之前分支结果视为未发生
+	reconstruct_count += 1
+	_apply_reconstruct_anomalies()
+	made_choice = Choice.NONE
+
+	# 玩家瞬移到手机旁
+	player.position = Vector2(430, 545)
+	player.velocity = Vector2.ZERO
+
+	else_overlay.visible = false
+	else_box.visible = true
+	else_hint_label.visible = true
+	_is_reconstructing = false
+
+	# 立即重新显示「林夏：我在你楼下。」+ 三个选项
+	_open_choice()
+
+
+func _apply_reconstruct_anomalies() -> void:
+	for drop in _rain_anomaly:
+		drop.visible = true
+	for entry in interactables:
+		if entry.id == "photo":
+			entry.text = "一张有些褪色的合影。照片里的笑容，好像比记忆里淡了一点。"
 
 
 func _update_rain(delta: float) -> void:
@@ -583,3 +801,11 @@ func _update_rain(delta: float) -> void:
 		if drop.position.y > 262.0:
 			drop.position.y = 124.0
 			drop.position.x = randf_range(872.0, 1018.0)
+
+	if reconstruct_count >= 1:
+		for drop in _rain_anomaly:
+			drop.position.y += 140.0 * delta
+			drop.position.x -= 28.0 * delta
+			if drop.position.y > 262.0:
+				drop.position.y = 124.0
+				drop.position.x = randf_range(920.0, 1022.0)
