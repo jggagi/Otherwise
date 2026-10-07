@@ -1,36 +1,60 @@
-extends Node3D
-## Otherwise — Milestone 0: Apartment Slice Foundation.
-## Builds the apartment graybox (walls, furniture, rainy exterior),
-## the four interactables, lighting, and the minimal UI.
+extends Node2D
+## Otherwise — Milestone 0 (2D quarter-view).
+## Builds the apartment stage box: warm interior walls/floor, a rainy city
+## window, four interactables, the player and the minimal UI.
 
-const WALL_H := 2.6
-const WALL_T := 0.2
+const VOID := Color(0.03, 0.045, 0.07)
+const WALL_BACK := Color(0.55, 0.49, 0.43)
+const WALL_SIDE := Color(0.44, 0.39, 0.34)
+const FLOOR_WOOD := Color(0.34, 0.27, 0.20)
+const FLOOR_SEAM := Color(0.30, 0.24, 0.17)
+const WINDOW_SKY := Color(0.12, 0.16, 0.23)
+const FRAME := Color(0.38, 0.33, 0.28)
 
-@onready var player: CharacterBody3D = $Player
-@onready var cam: Camera3D = $Camera3D
-@onready var interactables_root: Node3D = $Interactables
-@onready var environment_root: Node3D = $Environment
-@onready var lighting_root: Node3D = $Lighting
+@onready var player: CharacterBody2D = $Room/Player
+@onready var walls: Node2D = $Walls
+@onready var floor_node: Node2D = $Floor
+@onready var room: Node2D = $Room
 @onready var hint_label: Label = $UI/Hint
 @onready var prompt_label: Label = $UI/Prompt
 @onready var message_label: Label = $UI/Message
 
-var interactables: Array[Interactable] = []
-var current: Interactable = null
+var interactables: Array[InteractableEntry] = []
+var current: InteractableEntry = null
 var message_time := 0.0
 var message_duration := 3.5
 
+var _rain: Array[Polygon2D] = []
+
+
+class InteractableEntry:
+	var node: Node2D
+	var prompt: String
+	var text: String
+	var radius: float
+
+	func _init(n: Node2D, p: String, t: String, r: float) -> void:
+		node = n
+		prompt = p
+		text = t
+		radius = r
+
 
 func _ready() -> void:
-	_build_world()
+	room.y_sort_enabled = true
+	_build_backdrop()
+	_build_walls()
+	_build_floor()
+	_build_light_pools()
+	_build_furniture()
 	_build_interactables()
+	_build_boundary()
 	_setup_player()
-	_setup_camera()
 	_setup_ui()
-	_setup_environment()
 
 
 func _process(delta: float) -> void:
+	_update_rain(delta)
 	_update_interaction()
 	_update_message(delta)
 
@@ -42,266 +66,267 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Geometry helpers
 # ---------------------------------------------------------------------------
 
-func _colored_mesh(parent: Node, size: Vector3, pos: Vector3, color: Color) -> MeshInstance3D:
-	var instance := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = size
-	instance.mesh = box
-	var material := StandardMaterial3D.new()
-	material.albedo_color = color
-	material.roughness = 0.9
-	instance.material_override = material
-	instance.position = pos
-	parent.add_child(instance)
-	return instance
+func _poly(parent: Node, points: PackedVector2Array, color: Color) -> Polygon2D:
+	var p := Polygon2D.new()
+	p.polygon = points
+	p.color = color
+	parent.add_child(p)
+	return p
 
 
-func _solid_box(parent: Node, size: Vector3, pos: Vector3, color: Color) -> void:
-	var body := StaticBody3D.new()
-	body.position = pos
-	var collision := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = size
-	collision.shape = box
-	body.add_child(collision)
-	_colored_mesh(body, size, Vector3.ZERO, color)
+func _rect(parent: Node, r: Rect2, color: Color) -> Polygon2D:
+	return _poly(parent, PackedVector2Array([
+		r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y),
+	]), color)
+
+
+func _circle(parent: Node, center: Vector2, radius: float, color: Color) -> Polygon2D:
+	var points := PackedVector2Array()
+	for i in range(32):
+		var angle := TAU * float(i) / 32.0
+		points.append(center + Vector2(cos(angle), sin(angle)) * radius)
+	return _poly(parent, points, color)
+
+
+func _add_box(parent: Node, pos: Vector2, w: float, d: float, h: float, top: Color, front: Color) -> Node2D:
+	var box := Node2D.new()
+	box.position = pos
+	# Top face (recedes up-screen by depth d).
+	_poly(box, PackedVector2Array([
+		Vector2(-w * 0.5, -d), Vector2(w * 0.5, -d),
+		Vector2(w * 0.5, 0.0), Vector2(-w * 0.5, 0.0),
+	]), top)
+	# Front face (drops down by height h).
+	_poly(box, PackedVector2Array([
+		Vector2(-w * 0.5, 0.0), Vector2(w * 0.5, 0.0),
+		Vector2(w * 0.5, h), Vector2(-w * 0.5, h),
+	]), front)
+	# Collision footprint covering the visible extent.
+	var body := StaticBody2D.new()
+	var col := CollisionShape2D.new()
+	var shape := RectangleShape2D.new()
+	shape.size = Vector2(w, d + h)
+	col.shape = shape
+	col.position = Vector2(0.0, (h - d) * 0.5)
+	body.add_child(col)
+	box.add_child(body)
+	parent.add_child(box)
+	return box
+
+
+func _add_wall(parent: Node, a: Vector2, b: Vector2, thickness: float) -> void:
+	var mid := (a + b) * 0.5
+	var delta := b - a
+	var body := StaticBody2D.new()
+	body.position = mid
+	body.rotation = delta.angle()
+	var col := CollisionShape2D.new()
+	var shape := RectangleShape2D.new()
+	shape.size = Vector2(delta.length(), thickness)
+	col.shape = shape
+	body.add_child(col)
 	parent.add_child(body)
 
 
-func _cylinder(parent: Node, radius: float, height: float, pos: Vector3, color: Color) -> MeshInstance3D:
-	var instance := MeshInstance3D.new()
-	var cyl := CylinderMesh.new()
-	cyl.top_radius = radius
-	cyl.bottom_radius = radius
-	cyl.height = height
-	instance.mesh = cyl
-	var material := StandardMaterial3D.new()
-	material.albedo_color = color
-	material.roughness = 0.9
-	instance.material_override = material
-	instance.position = pos
-	parent.add_child(instance)
-	return instance
-
-
-func _emissive(parent: Node, size: Vector3, pos: Vector3, color: Color, energy := 1.0) -> MeshInstance3D:
-	var instance := _colored_mesh(parent, size, pos, color)
-	var material: StandardMaterial3D = instance.material_override
-	material.emission_enabled = true
-	material.emission = color
-	material.emission_energy_multiplier = energy
-	return instance
-
-
 # ---------------------------------------------------------------------------
-# World construction
+# Construction
 # ---------------------------------------------------------------------------
 
-func _build_world() -> void:
-	_build_floor_and_walls()
-	_build_entrance()
-	_build_living_room()
-	_build_kitchen()
-	_build_bedroom()
-	_build_exterior()
-	_build_lighting()
+func _build_backdrop() -> void:
+	var bg := _poly(self, PackedVector2Array([
+		Vector2(-2000, -2000), Vector2(2000, -2000),
+		Vector2(2000, 2000), Vector2(-2000, 2000),
+	]), VOID)
+	bg.z_index = -100
 
 
-func _build_floor_and_walls() -> void:
-	# Floor (12 x 8.4 m), warm wood tone.
-	_solid_box(environment_root, Vector3(12.0, 0.2, 8.4), Vector3(0, -0.1, -0.2), Color(0.40, 0.33, 0.25))
-
-	# Left, right and back walls (warm gray).
-	_solid_box(environment_root, Vector3(WALL_T, WALL_H, 7.4), Vector3(-5.0, WALL_H * 0.5, -0.5), Color(0.72, 0.68, 0.63))
-	_solid_box(environment_root, Vector3(WALL_T, WALL_H, 7.4), Vector3(5.0, WALL_H * 0.5, -0.5), Color(0.72, 0.68, 0.63))
-
-	# Back wall split around a wide window (opening spans x in [-2, 2]).
-	_solid_box(environment_root, Vector3(3.6, WALL_H, WALL_T), Vector3(-3.8, WALL_H * 0.5, -4.0), Color(0.72, 0.68, 0.63))
-	_solid_box(environment_root, Vector3(3.6, WALL_H, WALL_T), Vector3(3.8, WALL_H * 0.5, -4.0), Color(0.72, 0.68, 0.63))
-	# Window sill and lintel.
-	_solid_box(environment_root, Vector3(4.0, 0.8, 0.3), Vector3(0, 0.4, -4.0), Color(0.55, 0.48, 0.40))
-	_solid_box(environment_root, Vector3(4.0, 0.5, 0.3), Vector3(0, WALL_H - 0.25, -4.0), Color(0.55, 0.48, 0.40))
-
-	# Front low wall — an architectural "cutaway" so the fixed camera reads the room.
-	_solid_box(environment_root, Vector3(10.4, 0.5, WALL_T), Vector3(0, 0.25, 3.0), Color(0.62, 0.58, 0.53))
-
-
-func _build_entrance() -> void:
-	# Front door on the left wall.
-	_colored_mesh(environment_root, Vector3(0.06, 2.1, 0.9), Vector3(-4.86, 1.05, 1.7), Color(0.33, 0.26, 0.20))
-	_colored_mesh(environment_root, Vector3(0.10, 0.12, 1.0), Vector3(-4.86, 2.2, 1.7), Color(0.45, 0.36, 0.28))
-	# Shoe cabinet along the left wall.
-	_solid_box(environment_root, Vector3(0.4, 0.9, 0.8), Vector3(-4.35, 0.45, 0.7), Color(0.50, 0.40, 0.30))
-	# A couple of shoes on the floor.
-	_colored_mesh(environment_root, Vector3(0.3, 0.08, 0.13), Vector3(-4.05, 0.04, 2.4), Color(0.16, 0.16, 0.18))
-	_colored_mesh(environment_root, Vector3(0.3, 0.08, 0.13), Vector3(-4.05, 0.04, 2.62), Color(0.16, 0.16, 0.18))
-	# Umbrella leaning near the door.
-	_cylinder(environment_root, 0.05, 1.1, Vector3(-4.35, 0.55, 2.3), Color(0.15, 0.18, 0.24))
-
-
-func _build_living_room() -> void:
-	# Rug.
-	_colored_mesh(environment_root, Vector3(3.4, 0.02, 2.2), Vector3(3.0, 0.01, 0.3), Color(0.28, 0.30, 0.30))
-	# Sofa against the right wall.
-	_solid_box(environment_root, Vector3(1.0, 0.5, 2.4), Vector3(4.25, 0.25, 0.2), Color(0.34, 0.38, 0.44))
-	_colored_mesh(environment_root, Vector3(0.3, 0.95, 2.4), Vector3(4.85, 0.55, 0.2), Color(0.30, 0.34, 0.40))
-	# Coffee table.
-	_solid_box(environment_root, Vector3(1.4, 0.06, 0.8), Vector3(2.5, 0.45, 0.2), Color(0.52, 0.40, 0.28))
-	_solid_box(environment_root, Vector3(0.4, 0.45, 0.4), Vector3(2.5, 0.225, 0.2), Color(0.44, 0.33, 0.24))
-	# Floor lamp in the far corner.
-	_cylinder(environment_root, 0.035, 1.5, Vector3(3.9, 0.75, 1.8), Color(0.30, 0.28, 0.26))
-	var shade := _cylinder(environment_root, 0.22, 0.42, Vector3(3.9, 1.72, 1.8), Color(0.92, 0.82, 0.62))
-	shade.material_override.emission_enabled = true
-	shade.material_override.emission = Color(1.0, 0.82, 0.55)
-	shade.material_override.emission_energy_multiplier = 1.0
-
-
-func _build_kitchen() -> void:
-	# Dining table + two chairs (left-back area).
-	_solid_box(environment_root, Vector3(1.7, 0.07, 1.0), Vector3(-3.0, 0.75, -2.5), Color(0.52, 0.40, 0.28))
-	_solid_box(environment_root, Vector3(0.5, 0.75, 0.5), Vector3(-3.0, 0.375, -2.5), Color(0.44, 0.33, 0.24))
-	_colored_mesh(environment_root, Vector3(0.45, 0.5, 0.45), Vector3(-2.5, 0.25, -1.7), Color(0.40, 0.36, 0.34))
-	_colored_mesh(environment_root, Vector3(0.45, 0.5, 0.45), Vector3(-3.5, 0.25, -1.7), Color(0.40, 0.36, 0.34))
-	# Kitchen counters along the back and left walls.
-	_solid_box(environment_root, Vector3(2.5, 0.9, 0.6), Vector3(-3.25, 0.45, -3.6), Color(0.40, 0.40, 0.40))
-	_solid_box(environment_root, Vector3(0.6, 0.9, 2.0), Vector3(-4.5, 0.45, -3.0), Color(0.40, 0.40, 0.40))
-
-
-func _build_bedroom() -> void:
-	# Half-height divider so the bed is only glimpsed from above.
-	_solid_box(environment_root, Vector3(2.8, 1.3, 0.15), Vector3(3.1, 0.65, -1.2), Color(0.68, 0.64, 0.60))
-	# Bed against the right/back corner.
-	_solid_box(environment_root, Vector3(2.0, 0.4, 1.6), Vector3(4.0, 0.2, -3.0), Color(0.66, 0.64, 0.70))
-	_colored_mesh(environment_root, Vector3(0.15, 0.8, 1.6), Vector3(4.9, 0.4, -3.0), Color(0.52, 0.42, 0.34))
-	_colored_mesh(environment_root, Vector3(0.5, 0.16, 0.6), Vector3(3.7, 0.48, -3.4), Color(0.82, 0.80, 0.85))
-	# Nightstand.
-	_solid_box(environment_root, Vector3(0.4, 0.5, 0.4), Vector3(2.7, 0.25, -3.0), Color(0.48, 0.38, 0.28))
-
-
-func _build_exterior() -> void:
-	# Balcony slab just outside the window.
-	_colored_mesh(environment_root, Vector3(12.0, 0.12, 1.0), Vector3(0, -0.06, -4.6), Color(0.1, 0.11, 0.13))
-	# Distant building silhouettes.
-	_colored_mesh(environment_root, Vector3(3.0, 6.0, 1.5), Vector3(-4.0, 3.0, -9.0), Color(0.07, 0.08, 0.12))
-	_colored_mesh(environment_root, Vector3(4.0, 8.0, 1.5), Vector3(-0.5, 4.0, -8.5), Color(0.06, 0.07, 0.11))
-	_colored_mesh(environment_root, Vector3(3.0, 5.0, 1.5), Vector3(3.0, 2.5, -10.0), Color(0.08, 0.09, 0.13))
-	_colored_mesh(environment_root, Vector3(2.5, 3.5, 1.5), Vector3(1.5, 1.75, -11.0), Color(0.07, 0.08, 0.12))
-	# Distant lit apartment windows (warm/cool dots).
-	var window_dots := [
-		Vector3(-4.8, 2.5, -8.2), Vector3(-3.5, 1.5, -8.2), Vector3(-3.2, 3.6, -8.2),
-		Vector3(-2.0, 2.2, -7.7), Vector3(-0.8, 3.0, -7.7), Vector3(0.3, 1.4, -7.7),
-		Vector3(1.2, 2.8, -7.7), Vector3(2.2, 2.2, -9.2), Vector3(3.6, 1.6, -9.2),
-		Vector3(3.8, 3.2, -9.2), Vector3(-1.0, 4.6, -7.7), Vector3(0.6, 5.2, -7.7),
-		Vector3(1.8, 3.6, -10.2), Vector3(-4.0, 4.2, -8.2), Vector3(3.2, 4.0, -9.2),
-	]
-	for p in window_dots:
-		_emissive(environment_root, Vector3(0.26, 0.34, 0.02), p, Color(0.85, 0.72, 0.45), 1.2)
+func _build_walls() -> void:
+	# Back wall (straight-on far wall).
+	_rect(walls, Rect2(220, 80, 840, 220), WALL_BACK)
+	# Side walls, slanting toward the viewer.
+	_poly(walls, PackedVector2Array([
+		Vector2(120, 80), Vector2(220, 80), Vector2(220, 300), Vector2(130, 660),
+	]), WALL_SIDE)
+	_poly(walls, PackedVector2Array([
+		Vector2(1160, 80), Vector2(1060, 80), Vector2(1060, 300), Vector2(1150, 660),
+	]), WALL_SIDE)
+	# Kitchen sink window (small) and, right, the big rainy living-room window.
+	_build_window(Rect2(385, 145, 120, 90), false)
+	_build_window(Rect2(865, 120, 160, 145), true)
 	_build_rain()
+	# Bedroom glimpse: a dark doorway with a faint bed inside.
+	_poly(walls, PackedVector2Array([
+		Vector2(700, 100), Vector2(790, 100), Vector2(790, 300), Vector2(700, 300),
+	]), Color(0.06, 0.07, 0.09))
+	_poly(walls, PackedVector2Array([
+		Vector2(712, 240), Vector2(778, 240), Vector2(778, 298), Vector2(712, 298),
+	]), Color(0.13, 0.14, 0.18))
+	_poly(walls, PackedVector2Array([
+		Vector2(712, 210), Vector2(778, 210), Vector2(778, 232), Vector2(712, 232),
+	]), Color(0.20, 0.21, 0.26))
+
+
+func _build_window(r: Rect2, with_city: bool) -> void:
+	_rect(walls, r, WINDOW_SKY)
+	if with_city:
+		var buildings := [
+			Rect2(r.position.x + 6, r.end.y - 60, 34, 60),
+			Rect2(r.position.x + 46, r.end.y - 40, 44, 40),
+			Rect2(r.position.x + 96, r.end.y - 66, 40, 66),
+			Rect2(r.position.x + 140, r.end.y - 34, 20, 34),
+		]
+		for br: Rect2 in buildings:
+			_rect(walls, br, Color(0.07, 0.09, 0.14))
+		for i in range(8):
+			var wx := r.position.x + 10.0 + float(i) * 19.0
+			var wy := r.position.y + 14.0 + float(i % 3) * 22.0
+			_rect(walls, Rect2(wx, wy, 7, 9), Color(0.88, 0.74, 0.48, 0.75))
+	var fw := 6.0
+	_rect(walls, Rect2(r.position.x - fw, r.position.y - fw, r.size.x + fw * 2.0, fw), FRAME)
+	_rect(walls, Rect2(r.position.x - fw, r.position.y + r.size.y, r.size.x + fw * 2.0, fw), FRAME)
+	_rect(walls, Rect2(r.position.x - fw, r.position.y, fw, r.size.y), FRAME)
+	_rect(walls, Rect2(r.position.x + r.size.x, r.position.y, fw, r.size.y), FRAME)
+	_rect(walls, Rect2(r.position.x + r.size.x * 0.5 - 2.0, r.position.y, 4.0, r.size.y), FRAME)
 
 
 func _build_rain() -> void:
-	var rain := CPUParticles3D.new()
-	rain.name = "Rain"
-	rain.amount = 350
-	rain.lifetime = 1.1
-	rain.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
-	rain.emission_box_extents = Vector3(6.0, 3.0, 1.0)
-	rain.direction = Vector3(0, -1, 0)
-	rain.spread = 4.0
-	rain.gravity = Vector3(0, -11.0, 0)
-	rain.initial_velocity_min = 5.0
-	rain.initial_velocity_max = 9.0
-	rain.scale_amount_min = 0.8
-	rain.scale_amount_max = 1.2
-	rain.color = Color(0.62, 0.72, 0.9, 0.55)
-	var drop := BoxMesh.new()
-	drop.size = Vector3(0.02, 0.5, 0.02)
-	var drop_material := StandardMaterial3D.new()
-	drop_material.albedo_color = Color(0.62, 0.72, 0.9, 0.5)
-	drop_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	drop_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	drop.material = drop_material
-	rain.mesh = drop
-	rain.position = Vector3(0, 3.0, -5.6)
-	environment_root.add_child(rain)
+	for i in range(16):
+		var drop := Polygon2D.new()
+		var dh := 8.0 + float(i % 4) * 4.0
+		drop.polygon = PackedVector2Array([
+			Vector2(-1.0, -dh * 0.5), Vector2(1.0, -dh * 0.5),
+			Vector2(1.0, dh * 0.5), Vector2(-1.0, dh * 0.5),
+		])
+		drop.color = Color(0.62, 0.72, 0.9, 0.45)
+		drop.position = Vector2(randf_range(872.0, 1018.0), randf_range(126.0, 260.0))
+		walls.add_child(drop)
+		_rain.append(drop)
 
 
-func _build_lighting() -> void:
-	# Warm living-room lamp.
-	var lamp := OmniLight3D.new()
-	lamp.position = Vector3(3.9, 1.9, 1.8)
-	lamp.light_color = Color(1.0, 0.82, 0.62)
-	lamp.light_energy = 1.1
-	lamp.omni_range = 5.5
-	lamp.shadow_enabled = true
-	lighting_root.add_child(lamp)
-	# Warm kitchen light.
-	var kitchen := OmniLight3D.new()
-	kitchen.position = Vector3(-3.0, 1.7, -2.0)
-	kitchen.light_color = Color(1.0, 0.86, 0.68)
-	kitchen.light_energy = 0.8
-	kitchen.omni_range = 4.5
-	kitchen.shadow_enabled = true
-	lighting_root.add_child(kitchen)
-	# Cool moonlight coming through the window.
-	var moon := DirectionalLight3D.new()
-	moon.position = Vector3(0, 5.0, -7.0)
-	moon.light_color = Color(0.55, 0.65, 0.9)
-	moon.light_energy = 0.5
-	moon.shadow_enabled = true
-	lighting_root.add_child(moon)
-	moon.look_at(Vector3(0, 0, 0), Vector3.UP)
+func _build_floor() -> void:
+	_poly(floor_node, PackedVector2Array([
+		Vector2(220, 300), Vector2(1060, 300), Vector2(1150, 660), Vector2(130, 660),
+	]), FLOOR_WOOD)
+	for i in range(1, 6):
+		var t := float(i) / 6.0
+		var y := lerpf(300.0, 660.0, t)
+		var lx := lerpf(220.0, 130.0, t)
+		var rx := lerpf(1060.0, 1150.0, t)
+		_poly(floor_node, PackedVector2Array([
+			Vector2(lx, y), Vector2(rx, y), Vector2(rx, y + 1.5), Vector2(lx, y + 1.5),
+		]), FLOOR_SEAM)
+
+
+func _build_light_pools() -> void:
+	# Cool spill from the living-room window onto the floor.
+	_poly(floor_node, PackedVector2Array([
+		Vector2(865, 268), Vector2(1025, 268), Vector2(1090, 620), Vector2(760, 620),
+	]), Color(0.45, 0.60, 0.85, 0.09))
+	# Warm pool around the floor lamp.
+	_circle(floor_node, Vector2(950, 470), 150.0, Color(1.0, 0.78, 0.50, 0.10))
+	# Warm pool near the entrance.
+	_circle(floor_node, Vector2(350, 360), 120.0, Color(1.0, 0.78, 0.50, 0.07))
+
+
+func _build_furniture() -> void:
+	# Rug under the sofa.
+	_rect(room, Rect2(360, 380, 300, 150), Color(0.25, 0.27, 0.29))
+	# Sofa.
+	_add_box(room, Vector2(430, 400), 200, 80, 46, Color(0.42, 0.46, 0.52), Color(0.34, 0.38, 0.44))
+	# Coffee table.
+	_add_box(room, Vector2(430, 480), 120, 55, 22, Color(0.55, 0.42, 0.28), Color(0.44, 0.33, 0.24))
+	# Kitchen counter along the back wall.
+	_add_box(room, Vector2(450, 306), 210, 55, 58, Color(0.50, 0.50, 0.52), Color(0.40, 0.40, 0.42))
+	# Dining table and two chairs.
+	_add_box(room, Vector2(830, 440), 140, 90, 26, Color(0.55, 0.42, 0.28), Color(0.44, 0.33, 0.24))
+	_add_box(room, Vector2(752, 436), 46, 46, 40, Color(0.42, 0.46, 0.52), Color(0.34, 0.38, 0.44))
+	_add_box(room, Vector2(908, 436), 46, 46, 40, Color(0.42, 0.46, 0.52), Color(0.34, 0.38, 0.44))
+	# Desk under the window.
+	_add_box(room, Vector2(940, 386), 130, 60, 26, Color(0.52, 0.40, 0.28), Color(0.42, 0.32, 0.24))
+	# Floor lamp.
+	_build_lamp()
+
+
+func _build_lamp() -> void:
+	var lamp := Node2D.new()
+	lamp.position = Vector2(950, 470)
+	_poly(lamp, PackedVector2Array([
+		Vector2(-2, -120), Vector2(2, -120), Vector2(2, 0), Vector2(-2, 0),
+	]), Color(0.30, 0.28, 0.26))
+	_rect(lamp, Rect2(-14, -2, 28, 6), Color(0.32, 0.30, 0.28))
+	_poly(lamp, PackedVector2Array([
+		Vector2(-26, -120), Vector2(26, -120), Vector2(18, -150), Vector2(-18, -150),
+	]), Color(1.0, 0.82, 0.55, 0.95))
+	room.add_child(lamp)
 
 
 # ---------------------------------------------------------------------------
 # Interactables
 # ---------------------------------------------------------------------------
 
+func _register(node: Node2D, prompt: String, text: String, radius: float) -> void:
+	interactables.append(InteractableEntry.new(node, prompt, text, radius))
+
+
 func _build_interactables() -> void:
-	var phone := _make_interactable("Phone", Vector3(2.1, 0.49, 0.2), "手机", "林夏：我在你楼下。", 1.0)
-	_colored_mesh(phone, Vector3(0.16, 0.012, 0.08), Vector3(0, 0.05, 0), Color(0.1, 0.1, 0.12))
-	# A faintly lit screen on top.
-	_emissive(phone, Vector3(0.14, 0.002, 0.06), Vector3(0, 0.058, 0), Color(0.55, 0.7, 0.95), 2.0)
+	# Phone on the coffee table.
+	var phone := _add_box(room, Vector2(430, 468), 34, 16, 6, Color(0.12, 0.12, 0.15), Color(0.08, 0.08, 0.10))
+	_rect(phone, Rect2(-13, -13, 26, 10), Color(0.55, 0.70, 0.95, 0.9))
+	_register(phone, "手机", "林夏：我在你楼下。", 95.0)
 
-	var door := _make_interactable("Door", Vector3(-4.86, 1.05, 1.7), "门", "门外只有雨声。", 1.1)
-	_colored_mesh(door, Vector3(0.06, 2.1, 0.9), Vector3(0, 0, 0), Color(0.33, 0.26, 0.20))
+	# Front door on the back wall.
+	var door := Node2D.new()
+	door.position = Vector2(290, 300)
+	_poly(door, PackedVector2Array([
+		Vector2(-33, -205), Vector2(33, -205), Vector2(33, 0), Vector2(-33, 0),
+	]), Color(0.33, 0.26, 0.20))
+	_poly(door, PackedVector2Array([
+		Vector2(-40, -210), Vector2(-33, -210), Vector2(-33, 0), Vector2(-40, 0),
+	]), Color(0.42, 0.34, 0.26))
+	_poly(door, PackedVector2Array([
+		Vector2(33, -210), Vector2(40, -210), Vector2(40, 0), Vector2(33, 0),
+	]), Color(0.42, 0.34, 0.26))
+	_rect(door, Rect2(20, -105, 5, 5), Color(0.85, 0.78, 0.60))
+	walls.add_child(door)
+	_register(door, "门", "门外只有雨声。", 105.0)
 
-	var laptop := _make_interactable("Laptop", Vector3(3.1, 0.54, 0.2), "笔记本", "你的个人电脑，屏幕暗着。", 1.0)
-	_colored_mesh(laptop, Vector3(0.32, 0.025, 0.22), Vector3(0, 0.03, 0), Color(0.18, 0.18, 0.22))
-	_colored_mesh(laptop, Vector3(0.32, 0.22, 0.02), Vector3(0, 0.15, -0.09), Color(0.15, 0.15, 0.18))
+	# Laptop on the desk.
+	var laptop := _add_box(room, Vector2(940, 372), 44, 26, 4, Color(0.16, 0.16, 0.20), Color(0.12, 0.12, 0.15))
+	_poly(laptop, PackedVector2Array([
+		Vector2(-20, -26), Vector2(20, -26), Vector2(20, 0), Vector2(-20, 0),
+	]), Color(0.13, 0.15, 0.20))
+	_rect(laptop, Rect2(-17, -23, 30, 16), Color(0.10, 0.12, 0.16))
+	_register(laptop, "笔记本", "你的个人电脑，屏幕暗着。", 95.0)
 
-	var photo := _make_interactable("Photo", Vector3(4.84, 1.7, 0.2), "照片", "一张有些褪色的合影。", 1.0)
-	_colored_mesh(photo, Vector3(0.04, 0.66, 0.5), Vector3(0, 0, 0), Color(0.48, 0.38, 0.28))
-	_colored_mesh(photo, Vector3(0.01, 0.58, 0.42), Vector3(-0.03, 0, 0), Color(0.72, 0.7, 0.68))
+	# Framed photo on the back wall.
+	var photo := Node2D.new()
+	photo.position = Vector2(615, 300)
+	_poly(photo, PackedVector2Array([
+		Vector2(-28, -78), Vector2(28, -78), Vector2(28, 0), Vector2(-28, 0),
+	]), Color(0.44, 0.36, 0.28))
+	_poly(photo, PackedVector2Array([
+		Vector2(-23, -72), Vector2(23, -72), Vector2(23, -6), Vector2(-23, -6),
+	]), Color(0.62, 0.60, 0.58))
+	walls.add_child(photo)
+	_register(photo, "照片", "一张有些褪色的合影。", 105.0)
 
 
-func _make_interactable(node_name: String, pos: Vector3, prompt: String, text: String, radius: float) -> Interactable:
-	var interactable := Interactable.new()
-	interactable.name = node_name
-	interactable.position = pos
-	interactable.prompt = prompt
-	interactable.text = text
-	interactable.radius = radius
-	interactables_root.add_child(interactable)
-	interactables.append(interactable)
-	return interactable
+func _build_boundary() -> void:
+	_add_wall(self, Vector2(220, 300), Vector2(1060, 300), 8.0)
+	_add_wall(self, Vector2(220, 300), Vector2(130, 660), 8.0)
+	_add_wall(self, Vector2(1060, 300), Vector2(1150, 660), 8.0)
+	_add_wall(self, Vector2(130, 660), Vector2(1150, 660), 8.0)
 
 
 # ---------------------------------------------------------------------------
-# Player / camera / UI / environment setup
+# Player / UI setup
 # ---------------------------------------------------------------------------
 
 func _setup_player() -> void:
-	player.position = Vector3(1.0, 0.0, 1.2)
-
-
-func _setup_camera() -> void:
-	cam.position = Vector3(0.0, 8.0, 8.5)
-	cam.look_at(Vector3(0.0, 0.0, -0.5), Vector3.UP)
-	cam.fov = 46.0
+	player.position = Vector2(620, 570)
 
 
 func _setup_ui() -> void:
@@ -340,33 +365,18 @@ func _setup_ui() -> void:
 	message_label.visible = false
 
 
-func _setup_environment() -> void:
-	var world_env := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.045, 0.06, 0.10)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.55, 0.50, 0.45)
-	env.ambient_light_energy = 1.0
-	env.fog_enabled = true
-	env.fog_light_color = Color(0.10, 0.12, 0.17)
-	env.fog_density = 0.008
-	world_env.environment = env
-	add_child(world_env)
-
-
 # ---------------------------------------------------------------------------
-# Interaction + message updates
+# Interaction, message and rain updates
 # ---------------------------------------------------------------------------
 
 func _update_interaction() -> void:
-	var nearest: Interactable = null
+	var nearest: InteractableEntry = null
 	var best := INF
-	for interactable in interactables:
-		var distance := player.global_position.distance_to(interactable.global_position)
-		if distance <= interactable.radius and distance < best:
+	for entry in interactables:
+		var distance := player.global_position.distance_to(entry.node.global_position)
+		if distance <= entry.radius and distance < best:
 			best = distance
-			nearest = interactable
+			nearest = entry
 	current = nearest
 	if current != null:
 		prompt_label.text = "E · " + current.prompt
@@ -386,3 +396,12 @@ func _show_message(text: String) -> void:
 	message_label.text = text
 	message_label.visible = true
 	message_time = message_duration
+
+
+func _update_rain(delta: float) -> void:
+	for drop in _rain:
+		drop.position.y += 130.0 * delta
+		drop.position.x -= 16.0 * delta
+		if drop.position.y > 262.0:
+			drop.position.y = 124.0
+			drop.position.x = randf_range(872.0, 1018.0)
