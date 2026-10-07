@@ -261,7 +261,7 @@ func _build_props() -> void:
 	# 回复分支：茶几上的第二个杯子
 	var reply_mug := Polygon2D.new()
 	reply_mug.name = "PropMug"
-	reply_mug.position = Vector2(538, 424)
+	reply_mug.position = Vector2(545, 422)
 	reply_mug.polygon = PackedVector2Array([
 		Vector2(-6.0, -7.0), Vector2(6.0, -7.0),
 		Vector2(5.0, 7.0), Vector2(-5.0, 7.0),
