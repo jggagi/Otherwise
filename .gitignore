@@ -1,2 +1,5 @@
 # Godot 4 cache/import files
 .godot/
+
+# Acceptance screenshot evidence (regenerable)
+.verify/
