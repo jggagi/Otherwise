@@ -43,6 +43,11 @@ var anchors: Array[String] = []
 # Milestone 3 新增：「没拆开的信」惊悚时刻是否已在模拟中被透露
 var letter_revealed: bool = false
 
+# 重构异常节拍：模拟中林夏提到书架 → 返回现实，发圈真的在
+var bookshelf_hinted: bool = false
+var hair_tie_found: bool = false
+var _hair_tie_node: Node2D
+
 var interactables: Array[InteractableEntry] = []
 var current: InteractableEntry = null
 var message_time := 0.0
@@ -88,6 +93,7 @@ func _ready() -> void:
 	_build_backdrop()
 	_build_walls()
 	_build_furniture()
+	_build_bookshelf()
 	_build_interactables()
 	_build_props()
 	_build_occluders()
@@ -241,6 +247,90 @@ func _build_furniture() -> void:
 	_add_obstacle(room, Vector2(805, 528), Vector2(46, 36))
 	# 书桌（右前）
 	_add_obstacle(room, Vector2(921, 452), Vector2(162, 92))
+
+
+## 后墙照片下方：新增开放式木书架。
+## 当前为 graybox（Godot 图块）：木框 + 隔板 + 成排色块书；
+## 碰撞紧贴墙根，玩家无法绕到书架与墙之间，不需要遮挡精灵。
+## 发圈位于最下层隔板，默认隐藏，节拍触发后显示。
+func _build_bookshelf() -> void:
+	const SHELF_ANCHOR := Vector2(429.0, 312.0)
+	const W := 70.0
+	const H := 86.0
+	const T := 5.0              # 外框/隔板厚度
+	var wood := Color(0.49, 0.30, 0.17)
+	var inner := Color(0.38, 0.23, 0.13)
+
+	var shelf := Node2D.new()
+	shelf.name = "Bookshelf"
+	shelf.position = SHELF_ANCHOR      # YSort 锚点 = 前沿
+	room.add_child(shelf)
+
+	# 背板（书后可见的深色内部）
+	_add_rect(shelf, (-W*0.5+T), (-H+T), (W*0.5-T), 0.0, inner)
+	# 左右侧板 / 顶板 / 底板
+	_add_rect(shelf, (-W*0.5), (-H), (-W*0.5+T), 0.0, wood)
+	_add_rect(shelf, (W*0.5-T), (-H), (W*0.5), 0.0, wood)
+	_add_rect(shelf, (-W*0.5), (-H), (W*0.5), (-H+T), wood)
+	_add_rect(shelf, (-W*0.5), (-T), (W*0.5), 0.0, wood)
+	# 两层中间隔板
+	var shelf_ys := [-61.0, -38.0]
+	for sy in shelf_ys:
+		_add_rect(shelf, (-W*0.5), sy, (W*0.5), (sy+4.0), wood)
+
+	# 成排色块书（上三层，无书名）
+	var book_colors := [
+		Color(0.36, 0.42, 0.47), Color(0.43, 0.38, 0.34),
+		Color(0.31, 0.38, 0.35), Color(0.45, 0.33, 0.39),
+		Color(0.35, 0.38, 0.43), Color(0.40, 0.35, 0.28),
+	]
+	var level_bottoms := [-H+T, -61.0, -38.0]
+	for li in range(level_bottoms.size()):
+		var bx: float = -W*0.5 + T + 2.0
+		var bi := 0
+		while bx < W*0.5 - T - 3.0:
+			var bw: float = 4.0 + float((li*7 + bi) % 4)
+			var bh: float = 13.0 + float((bi*3 + li) % 4)
+			var by0: float = level_bottoms[li] + 2.0
+			_add_rect(shelf, bx, (by0 - bh), (bx+bw), by0, book_colors[(li*3+bi) % book_colors.size()])
+			bx += bw + 1.5
+			bi += 1
+
+	# 发圈：最下层隔板上的小深色环（默认隐藏）
+	var tie := Node2D.new()
+	tie.name = "PropHairTie"
+	tie.position = Vector2(0.0, -9.0)
+	var ring := Polygon2D.new()
+	ring.polygon = _circle_points(6.0, 18)
+	ring.scale.y = 0.65
+	ring.color = Color(0.17, 0.13, 0.11)
+	tie.add_child(ring)
+	tie.visible = false
+	shelf.add_child(tie)
+	_hair_tie_node = tie
+
+	# 前沿浅碰撞（贴着墙根，背面不可达）。
+	_add_obstacle(room, Vector2(SHELF_ANCHOR.x, 306.0), Vector2(64.0, 20.0))
+
+
+## graybox 图块：在 parent 内画一个实心矩形多边形。
+func _add_rect(parent: Node, x0: float, y0: float, x1: float, y1: float, color: Color) -> Polygon2D:
+	var p := Polygon2D.new()
+	p.polygon = PackedVector2Array([
+		Vector2(x0, y0), Vector2(x1, y0), Vector2(x1, y1), Vector2(x0, y1),
+	])
+	p.color = color
+	parent.add_child(p)
+	return p
+
+
+## graybox 图块：以原点为中心的正圆多边形点集。
+func _circle_points(radius: float, segments: int) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for i in range(segments):
+		var a: float = TAU * float(i) / float(segments)
+		pts.append(Vector2(cos(a), sin(a)) * radius)
+	return pts
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +492,13 @@ func _build_interactables() -> void:
 	letter.add_child(envelope)
 	room.add_child(letter)
 	_register("letter", letter, "信", "一封没拆开的信，压在桌角。", 80.0)
+
+	# 书架（后墙照片下方，中心 (429,315)，半径 64）
+	var bookshelf := Node2D.new()
+	bookshelf.name = "BookshelfAnchor"
+	bookshelf.position = Vector2(429, 312)
+	room.add_child(bookshelf)
+	_register("bookshelf", bookshelf, "书架", "旧书架，塞着大学时的书。", 64.0)
 
 
 func _build_boundary() -> void:
@@ -705,12 +802,18 @@ func _branch_text(choice: Choice) -> String:
 		Choice.IGNORE:
 			text = "你没有回复。后半夜你走到窗边，楼下的人影已经不见了。\n天亮时你在门口捡到一张被雨打湿的字条，只写着半句：「其实我明天要——」"
 
-	# 叠加（按优先级）：Anchor 领悟行 → 重构中的「信」台词
+	# 叠加：Anchor 领悟行（已有 Anchor 时的内心独白）
 	if anchors.has("fear_of_tomorrow"):
 		text += "\n你忽然明白：她不是在等一个答复，她是在害怕明天。"
-	if reconstruct_count >= 1 and choice == Choice.REPLY:
+	# 节拍：
+	# 第一次重构·回复：林夏指出桌上未拆的信（信节拍）
+	# 第二次重构·回复：林夏提到书架下层（书架异常节拍）
+	if reconstruct_count >= 1 and choice == Choice.REPLY and not letter_revealed:
 		text += "\n林夏：「……你桌上那封信，一直没拆开吧。」"
 		letter_revealed = true
+	elif reconstruct_count >= 2 and choice == Choice.REPLY and not bookshelf_hinted:
+		text += "\n林夏：「你书柜最下面那层，还有我的东西。」"
+		bookshelf_hinted = true
 	return text
 
 
@@ -742,6 +845,7 @@ func _return_to_room() -> void:
 	# 房间反映刚看过的分支留下的痕迹
 	_apply_branch_props(made_choice)
 	_update_letter_text()
+	_update_bookshelf()
 
 
 ## 信被模拟中的林夏指认后，真实房间里的信变为惊悚确认文本。
@@ -751,6 +855,19 @@ func _update_letter_text() -> void:
 	for entry in interactables:
 		if entry.id == "letter":
 			entry.text = "封口完好，从未拆开。可你盯着它，后背发凉——\nELSE 是怎么知道它在这里的？"
+
+
+## 书架异常：模拟中的台词听过之后，真实书架最下层出现发圈。
+func _update_bookshelf() -> void:
+	if not bookshelf_hinted or hair_tie_found:
+		return
+	hair_tie_found = true
+	if _hair_tie_node != null:
+		_hair_tie_node.visible = true
+	for entry in interactables:
+		if entry.id == "bookshelf":
+			entry.prompt = "书架下层"
+			entry.text = "最下层隔板上，静静躺着一枚发圈。\n是她的。可你从没见她碰过这个书架——ELSE 的数据里，也不该有它。"
 
 
 func _get_choice_name(c: Choice) -> String:
