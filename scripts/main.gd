@@ -249,88 +249,38 @@ func _build_furniture() -> void:
 	_add_obstacle(room, Vector2(921, 452), Vector2(162, 92))
 
 
-## 后墙照片下方：新增开放式木书架。
-## 当前为 graybox（Godot 图块）：木框 + 隔板 + 成排色块书；
-## 碰撞紧贴墙根，玩家无法绕到书架与墙之间，不需要遮挡精灵。
-## 发圈位于最下层隔板，默认隐藏，节拍触发后显示。
+## 后墙照片下方：开放式木书架（Antigravity 生成精灵）。
+## 前沿碰撞贴墙根，玩家无法绕到书架背面，不需要遮挡精灵。
+## 发圈是书架精灵的子节点（跟随 YSort），位于最下层隔板，默认隐藏。
 func _build_bookshelf() -> void:
-	const SHELF_ANCHOR := Vector2(429.0, 312.0)
-	const W := 70.0
-	const H := 86.0
-	const T := 5.0              # 外框/隔板厚度
-	var wood := Color(0.49, 0.30, 0.17)
-	var inner := Color(0.38, 0.23, 0.13)
+	const SHELF_ANCHOR := Vector2(440.0, 312.0)
+	const SHELF_WIDTH := 70.0
 
-	var shelf := Node2D.new()
+	var shelf := Sprite2D.new()
 	shelf.name = "Bookshelf"
-	shelf.position = SHELF_ANCHOR      # YSort 锚点 = 前沿
+	shelf.texture = load("res://assets/props/prop_bookshelf.png")
+	var k: float = SHELF_WIDTH / float(shelf.texture.get_width())
+	shelf.scale = Vector2(k, k)
+	var drawn_h: float = float(shelf.texture.get_height()) * k
+	# 纹理 bbox 下沿 = 书架最靠前的下角，对齐 YSort 锚点。
+	shelf.position = SHELF_ANCHOR - Vector2(0.0, drawn_h * 0.5)
 	room.add_child(shelf)
 
-	# 背板（书后可见的深色内部）
-	_add_rect(shelf, (-W*0.5+T), (-H+T), (W*0.5-T), 0.0, inner)
-	# 左右侧板 / 顶板 / 底板
-	_add_rect(shelf, (-W*0.5), (-H), (-W*0.5+T), 0.0, wood)
-	_add_rect(shelf, (W*0.5-T), (-H), (W*0.5), 0.0, wood)
-	_add_rect(shelf, (-W*0.5), (-H), (W*0.5), (-H+T), wood)
-	_add_rect(shelf, (-W*0.5), (-T), (W*0.5), 0.0, wood)
-	# 两层中间隔板
-	var shelf_ys := [-61.0, -38.0]
-	for sy in shelf_ys:
-		_add_rect(shelf, (-W*0.5), sy, (W*0.5), (sy+4.0), wood)
-
-	# 成排色块书（上三层，无书名）
-	var book_colors := [
-		Color(0.36, 0.42, 0.47), Color(0.43, 0.38, 0.34),
-		Color(0.31, 0.38, 0.35), Color(0.45, 0.33, 0.39),
-		Color(0.35, 0.38, 0.43), Color(0.40, 0.35, 0.28),
-	]
-	var level_bottoms := [-H+T, -61.0, -38.0]
-	for li in range(level_bottoms.size()):
-		var bx: float = -W*0.5 + T + 2.0
-		var bi := 0
-		while bx < W*0.5 - T - 3.0:
-			var bw: float = 4.0 + float((li*7 + bi) % 4)
-			var bh: float = 13.0 + float((bi*3 + li) % 4)
-			var by0: float = level_bottoms[li] + 2.0
-			_add_rect(shelf, bx, (by0 - bh), (bx+bw), by0, book_colors[(li*3+bi) % book_colors.size()])
-			bx += bw + 1.5
-			bi += 1
-
-	# 发圈：最下层隔板上的小深色环（默认隐藏）
-	var tie := Node2D.new()
+	# 发圈：书架子节点（父级有缩放，position 为纹理本地坐标）。
+	# 最下层隔板测定点 = 纹理 (324,748)，换算为相对纹理中心的偏移。
+	var tie := Sprite2D.new()
 	tie.name = "PropHairTie"
-	tie.position = Vector2(0.0, -9.0)
-	var ring := Polygon2D.new()
-	ring.polygon = _circle_points(6.0, 18)
-	ring.scale.y = 0.65
-	ring.color = Color(0.17, 0.13, 0.11)
-	tie.add_child(ring)
+	tie.texture = load("res://assets/props/prop_hair_tie.png")
+	var tk: float = 12.0 / float(tie.texture.get_width())
+	tie.scale = Vector2(tk / k, tk / k)   # 抵消父级缩放，保证最终尺寸
+	tie.position = Vector2(324.0, 748.0) - Vector2(
+		float(shelf.texture.get_width()) * 0.5, float(shelf.texture.get_height()) * 0.5)
 	tie.visible = false
 	shelf.add_child(tie)
 	_hair_tie_node = tie
 
 	# 前沿浅碰撞（贴着墙根，背面不可达）。
 	_add_obstacle(room, Vector2(SHELF_ANCHOR.x, 306.0), Vector2(64.0, 20.0))
-
-
-## graybox 图块：在 parent 内画一个实心矩形多边形。
-func _add_rect(parent: Node, x0: float, y0: float, x1: float, y1: float, color: Color) -> Polygon2D:
-	var p := Polygon2D.new()
-	p.polygon = PackedVector2Array([
-		Vector2(x0, y0), Vector2(x1, y0), Vector2(x1, y1), Vector2(x0, y1),
-	])
-	p.color = color
-	parent.add_child(p)
-	return p
-
-
-## graybox 图块：以原点为中心的正圆多边形点集。
-func _circle_points(radius: float, segments: int) -> PackedVector2Array:
-	var pts := PackedVector2Array()
-	for i in range(segments):
-		var a: float = TAU * float(i) / float(segments)
-		pts.append(Vector2(cos(a), sin(a)) * radius)
-	return pts
 
 
 # ---------------------------------------------------------------------------
@@ -493,10 +443,10 @@ func _build_interactables() -> void:
 	room.add_child(letter)
 	_register("letter", letter, "信", "一封没拆开的信，压在桌角。", 80.0)
 
-	# 书架（后墙照片下方，中心 (429,315)，半径 64）
+	# 书架（后墙照片下方，锚点 (440,312)，半径 64）
 	var bookshelf := Node2D.new()
 	bookshelf.name = "BookshelfAnchor"
-	bookshelf.position = Vector2(429, 312)
+	bookshelf.position = Vector2(440, 312)
 	room.add_child(bookshelf)
 	_register("bookshelf", bookshelf, "书架", "旧书架，塞着大学时的书。", 64.0)
 
