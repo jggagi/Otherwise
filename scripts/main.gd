@@ -1,932 +1,533 @@
 extends Node2D
-## Otherwise — Milestone 3 (vertical slice: branch props, Anchors, the letter).
-## Builds the apartment stage box: warm interior, a rainy city window,
-## interactables, the player, ELSE interface and minimal UI.
-
-## 游戏主状态
-enum State {
-	NORMAL,       # 自由探索房间
-	CHOICE,       # 手机分支选择中
-	BRANCH_VIEW,  # 分支剧情全屏黑屏展示中
-	ELSE,         # 笔记本 ELSE 重构界面
-}
-
-## 手机第一个选择的三个分支
-enum Choice {
-	NONE,
-	DOWN,    # [1] 下楼
-	REPLY,   # [2] 回复
-	IGNORE,  # [3] 不回复
-}
-
-@onready var player: CharacterBody2D = $Room/Player
-@onready var walls: Node2D = $Walls
-@onready var floor_node: Node2D = $Floor
-@onready var room: Node2D = $Room
-@onready var hint_label: Label = $UI/Hint
-@onready var prompt_label: Label = $UI/Prompt
-@onready var message_label: Label = $UI/Message
-
-var current_state: State = State.NORMAL
-var made_choice: Choice = Choice.NONE
-
-# Milestone 2 新增状态记录
-var seen_branches: Array[String] = []
+## Sole owner of narrative progress. Stage/UI/audio only present it.
+const STAGE = preload("res://scripts/apartment_stage.gd")
+const UI = preload("res://scripts/game_ui.gd")
+const SOUND = preload("res://scripts/soundscape.gd")
+const STORY = preload("res://scripts/story.gd")
+enum State { NORMAL, DIALOGUE, OPTIONS, TRANSITION, ENDED }
+enum Phase { OPENING, FIRST_READY, DEPARTURE, ELSE_READY, VERIFY_READY, FINAL_READY, END }
+var stage: Node2D
+var ui: CanvasLayer
+var sound: Node
+var current_state: State = State.OPTIONS
+var phase: Phase = Phase.OPENING
+var reality_choice: int = 0
+var simulation_choice: int = 0
+var in_simulation: bool = false
+var simulation_completed: bool = false
+var shelf_hint_known: bool = false
+var hair_tie_verified: bool = false
+var anchor: bool = false
+var final_response: int = 0
 var reconstruct_count: int = 0
-var _is_reconstructing: bool = false
-
-# Milestone 3 新增：Choice -> Array[Node2D] 分支占位道具
-var props_by_branch: Dictionary = {}
-
-# Milestone 3 新增：Anchor id 列表（跨重构持久的知识）
-var anchors: Array[String] = []
-# Milestone 3 新增：「没拆开的信」惊悚时刻是否已在模拟中被透露
-var letter_revealed: bool = false
-
-# 重构异常节拍：模拟中林夏提到书架 → 返回现实，发圈真的在
-var bookshelf_hinted: bool = false
-var hair_tie_found: bool = false
-var _hair_tie_node: Node2D
-
-var interactables: Array[InteractableEntry] = []
-var current: InteractableEntry = null
-var message_time := 0.0
-var message_duration := 3.5
-
-var _rain: Array[Polygon2D] = []
-var _rain_anomaly: Array[Polygon2D] = []
-
-# Milestone 1 新增 UI 节点
-var choices_label: Label
-var overlay: ColorRect
-var branch_text_label: Label
-var continue_hint_label: Label
-
-# Milestone 2 新增 UI 节点
-var else_overlay: ColorRect
-var else_box: VBoxContainer
-var else_title_label: Label
-var else_subtitle_label: Label
-var else_options_label: Label
-var else_history_label: Label
-var else_anchor_label: Label
-var else_hint_label: Label
-
-
-class InteractableEntry:
-	var id: String
-	var node: Node2D
-	var prompt: String
-	var text: String
-	var radius: float
-
-	func _init(i: String, n: Node2D, p: String, t: String, r: float) -> void:
-		id = i
-		node = n
-		prompt = p
-		text = t
-		radius = r
-
+var seen_events: Array[String] = []
+var seen_branches: Array[int] = []
+var lines: Array = []
+var line_index: int = 0
+var dialogue_done: Callable
+var paused: bool = false
+var paused_state: State
+var _paused_title: String
+var _paused_text: String
+var _paused_options: Array = []
+var _menu_title: String
+var _menu_text: String
+var _menu_options: Array = []
+var _reality_position := Vector2(605,570)
+var _quitting: bool = false
+const SAVE_PATH := "user://otherwise_save.json"
+const SETTINGS_PATH := "user://otherwise_settings.cfg"
 
 func _ready() -> void:
-	room.y_sort_enabled = true
-	_build_backdrop()
-	_build_walls()
-	_build_furniture()
-	_build_bookshelf()
-	_build_interactables()
-	_build_props()
-	_build_occluders()
-	_build_boundary()
-	_setup_player()
-	_setup_ui()
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	get_tree().auto_accept_quit = false
+	_configure_input()
+	stage = Node2D.new()
+	stage.set_script(STAGE)
+	stage.process_mode = Node.PROCESS_MODE_PAUSABLE
+	add_child(stage)
+	sound = Node.new()
+	sound.set_script(SOUND)
+	sound.process_mode = Node.PROCESS_MODE_PAUSABLE
+	add_child(sound)
+	ui = CanvasLayer.new()
+	ui.set_script(UI)
+	add_child(ui)
+	ui.selected.connect(select_option)
+	ui.continued.connect(advance_dialogue)
+	ui.setting_changed.connect(_change_setting)
+	_load_settings()
+	_show_title()
+	# Minimal release smoke entry: normal boot and normal audio-aware shutdown.
+	if "--verify-boot" in OS.get_cmdline_user_args():
+		print("RELEASE_BOOT_PASS version=",ProjectSettings.get_setting("application/config/version"))
+		_request_quit()
 
+func _configure_input() -> void:
+	var actions := {"move_left":[KEY_A,KEY_LEFT],"move_right":[KEY_D,KEY_RIGHT],"move_up":[KEY_W,KEY_UP],"move_down":[KEY_S,KEY_DOWN],"interact":[KEY_E]}
+	for action in actions:
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+			for key in actions[action]:
+				var event := InputEventKey.new()
+				event.physical_keycode = key
+				InputMap.action_add_event(action,event)
 
 func _process(delta: float) -> void:
-	_update_rain(delta)
-	if current_state == State.NORMAL:
-		_update_interaction()
-		_update_message(delta)
-
+	if paused:
+		return
+	if current_state==State.NORMAL:
+		ui.update_prompt(stage.current)
+		sound.walking(delta,stage.player.actually_moving)
+	ui.mode_label.text = "ELSE · 概率重构中" if in_simulation else ""
 
 func _unhandled_input(event: InputEvent) -> void:
-	var key_event := event as InputEventKey
-	if key_event == null or not key_event.pressed or key_event.echo:
+	if event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_LEFT:
+		if current_state==State.NORMAL and not paused:
+			stage.player.walk_to(get_global_mouse_position())
 		return
-
-	var key: Key = key_event.physical_keycode
-	var key_code: Key = key_event.keycode
-
-	match current_state:
-		State.NORMAL:
-			if (key == KEY_E or key_code == KEY_E) and current != null:
-				if current.id == "phone":
-					_open_choice()
-				elif current.id == "laptop" and made_choice != Choice.NONE:
-					_open_else()
-				else:
-					var text_to_show := current.text
-					if current.id == "photo" and reconstruct_count >= 1:
-						text_to_show = "一张有些褪色的合影。照片里的笑容，好像比记忆里淡了一点。"
-					_show_message(text_to_show)
-		State.CHOICE:
-			if key == KEY_1 or key == KEY_KP_1 or key_code == KEY_1 or key_code == KEY_KP_1:
-				_select_choice(Choice.DOWN)
-			elif key == KEY_2 or key == KEY_KP_2 or key_code == KEY_2 or key_code == KEY_KP_2:
-				_select_choice(Choice.REPLY)
-			elif key == KEY_3 or key == KEY_KP_3 or key_code == KEY_3 or key_code == KEY_KP_3:
-				_select_choice(Choice.IGNORE)
-			elif key == KEY_ESCAPE or key_code == KEY_ESCAPE:
-				_close_choice()
-		State.BRANCH_VIEW:
-			if key == KEY_E or key == KEY_SPACE or key_code == KEY_E or key_code == KEY_SPACE:
-				_return_to_room()
-		State.ELSE:
-			if _is_reconstructing:
-				return
-			if key == KEY_1 or key == KEY_KP_1 or key_code == KEY_1 or key_code == KEY_KP_1:
-				_reconstruct()
-			elif key == KEY_2 or key == KEY_KP_2 or key_code == KEY_2 or key_code == KEY_KP_2:
-				_close_else()
-			elif key == KEY_ESCAPE or key_code == KEY_ESCAPE:
-				_close_else()
-
-
-# ---------------------------------------------------------------------------
-# Physics helpers
-# ---------------------------------------------------------------------------
-
-func _add_obstacle(parent: Node, pos: Vector2, size: Vector2) -> StaticBody2D:
-	var body := StaticBody2D.new()
-	body.position = pos
-	var col := CollisionShape2D.new()
-	var shape := RectangleShape2D.new()
-	shape.size = size
-	col.shape = shape
-	body.add_child(col)
-	parent.add_child(body)
-	return body
-
-
-func _add_wall(parent: Node, a: Vector2, b: Vector2, thickness: float) -> void:
-	var mid := (a + b) * 0.5
-	var delta := b - a
-	var body := StaticBody2D.new()
-	body.position = mid
-	body.rotation = delta.angle()
-	var col := CollisionShape2D.new()
-	var shape := RectangleShape2D.new()
-	shape.size = Vector2(delta.length(), thickness)
-	col.shape = shape
-	body.add_child(col)
-	parent.add_child(body)
-
-
-# ---------------------------------------------------------------------------
-# Construction
-# ---------------------------------------------------------------------------
-
-func _build_backdrop() -> void:
-	var bg := Sprite2D.new()
-	bg.name = "Background"
-	var tex: Texture2D = load("res://assets/apartment_bg_v1.jpg")
-	bg.texture = tex
-	bg.position = Vector2(1152.0 * 0.5, 648.0 * 0.5)
-	if tex != null:
-		bg.scale = Vector2(1152.0 / tex.get_width(), 648.0 / tex.get_height())
-	bg.z_index = -150
-	add_child(bg)
-
-
-func _build_walls() -> void:
-	_build_rain()
-
-
-func _build_rain() -> void:
-	for i in range(16):
-		var drop := Polygon2D.new()
-		var dh := 8.0 + float(i % 4) * 4.0
-		drop.polygon = PackedVector2Array([
-			Vector2(-1.0, -dh * 0.5), Vector2(1.0, -dh * 0.5),
-			Vector2(1.0, dh * 0.5), Vector2(-1.0, dh * 0.5),
-		])
-		drop.color = Color(0.62, 0.72, 0.9, 0.45)
-		drop.position = Vector2(randf_range(935.0, 1080.0), randf_range(126.0, 260.0))
-		walls.add_child(drop)
-		_rain.append(drop)
-
-	# Milestone 2 视觉异常：第二组略微倾斜、颜色更浅、偏右的雨丝（仅重构后可见）
-	for i in range(12):
-		var drop := Polygon2D.new()
-		var dh := 7.0 + float(i % 3) * 3.5
-		drop.polygon = PackedVector2Array([
-			Vector2(-0.8, -dh * 0.5), Vector2(0.8, -dh * 0.5),
-			Vector2(0.8, dh * 0.5), Vector2(-0.8, dh * 0.5),
-		])
-		drop.rotation = deg_to_rad(-12.0)
-		drop.color = Color(0.75, 0.82, 0.95, 0.28)
-		drop.position = Vector2(randf_range(960.0, 1065.0), randf_range(126.0, 260.0))
-		drop.visible = false
-		walls.add_child(drop)
-		_rain_anomaly.append(drop)
-
-
-func _build_furniture() -> void:
-	# 全部按背景图实际占地标定（坐标网格读数）。
-	# 床（左，含床头；占地 x48..295）
-	_add_obstacle(room, Vector2(171, 419), Vector2(247, 179))
-	# 床尾长凳
-	_add_obstacle(room, Vector2(338, 481), Vector2(97, 80))
-	# 衣柜（后墙，柜体正面约 y330..420）
-	_add_obstacle(room, Vector2(710, 374), Vector2(170, 88))
-	# 茶几（地毯中央，带腿）
-	_add_obstacle(room, Vector2(528, 467), Vector2(95, 68))
-	# 沙发（中右，x642..799）
-	_add_obstacle(room, Vector2(720, 508), Vector2(157, 80))
-	# 落地灯（沙发右侧）
-	_add_obstacle(room, Vector2(805, 528), Vector2(46, 36))
-	# 书桌（右前）
-	_add_obstacle(room, Vector2(921, 452), Vector2(162, 92))
-
-
-## 后墙照片下方：开放式木书架（Antigravity 生成精灵）。
-## 前沿碰撞贴墙根，玩家无法绕到书架背面，不需要遮挡精灵。
-## 发圈是书架精灵的子节点（跟随 YSort），位于最下层隔板，默认隐藏。
-func _build_bookshelf() -> void:
-	const SHELF_ANCHOR := Vector2(440.0, 312.0)
-	const SHELF_WIDTH := 70.0
-
-	var shelf := Sprite2D.new()
-	shelf.name = "Bookshelf"
-	shelf.texture = load("res://assets/props/prop_bookshelf.png")
-	var k: float = SHELF_WIDTH / float(shelf.texture.get_width())
-	shelf.scale = Vector2(k, k)
-	var drawn_h: float = float(shelf.texture.get_height()) * k
-	# 纹理 bbox 下沿 = 书架最靠前的下角，对齐 YSort 锚点。
-	shelf.position = SHELF_ANCHOR - Vector2(0.0, drawn_h * 0.5)
-	room.add_child(shelf)
-
-	# 发圈：书架子节点（父级有缩放，position 为纹理本地坐标）。
-	# 最下层隔板测定点 = 纹理 (324,748)，换算为相对纹理中心的偏移。
-	var tie := Sprite2D.new()
-	tie.name = "PropHairTie"
-	tie.texture = load("res://assets/props/prop_hair_tie.png")
-	var tk: float = 12.0 / float(tie.texture.get_width())
-	tie.scale = Vector2(tk / k, tk / k)   # 抵消父级缩放，保证最终尺寸
-	tie.position = Vector2(324.0, 748.0) - Vector2(
-		float(shelf.texture.get_width()) * 0.5, float(shelf.texture.get_height()) * 0.5)
-	tie.visible = false
-	shelf.add_child(tie)
-	_hair_tie_node = tie
-
-	# 前沿浅碰撞（贴着墙根，背面不可达）。
-	_add_obstacle(room, Vector2(SHELF_ANCHOR.x, 306.0), Vector2(64.0, 20.0))
-
-
-# ---------------------------------------------------------------------------
-# Milestone 3: branch props (Antigravity-generated sprites, hidden by default)
-# ---------------------------------------------------------------------------
-
-## 造一个道具精灵：加载纹理，等比缩放进 target 框，居中于 pos。
-func _make_prop_sprite(tex_path: String, pos: Vector2, target: Vector2) -> Sprite2D:
-	var s := Sprite2D.new()
-	var tex: Texture2D = load(tex_path)
-	s.texture = tex
-	if tex != null:
-		var k: float = minf(target.x / tex.get_width(), target.y / tex.get_height())
-		s.scale = Vector2(k, k)
-	s.position = pos
-	return s
-
-
-func _build_props() -> void:
-	# 回复分支：门口多一双鞋
-	var reply_shoes := _make_prop_sprite("res://assets/props/prop_shoes.png", Vector2(250, 352), Vector2(34, 30))
-	reply_shoes.name = "PropShoes"
-	reply_shoes.visible = false
-	room.add_child(reply_shoes)
-
-	# 回复分支：茶几上的第二个杯子
-	var reply_mug := _make_prop_sprite("res://assets/props/prop_mug.png", Vector2(545, 422), Vector2(13, 15))
-	reply_mug.name = "PropMug"
-	reply_mug.visible = false
-	room.add_child(reply_mug)
-
-	# 回复分支：门口湿伞（带水渍）
-	var reply_umbrella := _make_wet_umbrella()
-	reply_umbrella.name = "PropWetUmbrella"
-	room.add_child(reply_umbrella)
-
-	# 下楼分支：门口一把没撑开的伞靠墙
-	var down_umbrella := _make_prop_sprite("res://assets/props/prop_umbrella_dry.png", Vector2(225, 320), Vector2(27, 66))
-	down_umbrella.name = "PropDownUmbrella"
-	down_umbrella.visible = false
-	room.add_child(down_umbrella)
-
-	# 不回复分支：门口地上被雨打湿的字条
-	var ignore_note := _make_prop_sprite("res://assets/props/prop_note.png", Vector2(245, 356), Vector2(28, 23))
-	ignore_note.name = "PropNote"
-	ignore_note.visible = false
-	room.add_child(ignore_note)
-
-	props_by_branch = {
-		Choice.REPLY: [reply_shoes, reply_mug, reply_umbrella],
-		Choice.DOWN: [down_umbrella],
-		Choice.IGNORE: [ignore_note],
-	}
-
-
-## 门口湿伞：收拢伞精灵（自带约 20° 倚靠倾角）+ 底部一摊水渍。
-func _make_wet_umbrella() -> Node2D:
-	var g := Node2D.new()
-	g.position = Vector2(225, 320)
-	var sprite := _make_prop_sprite("res://assets/props/prop_umbrella_wet.png", Vector2.ZERO, Vector2(30, 66))
-	g.add_child(sprite)
-
-	var puddle := Polygon2D.new()
-	var pts := PackedVector2Array()
-	for i in range(14):
-		var a := TAU * float(i) / 14.0
-		pts.append(Vector2(cos(a) * 16.0 - 9.0, sin(a) * 5.0 + 31.0))
-	puddle.polygon = pts
-	puddle.color = Color(0.45, 0.58, 0.78, 0.40)
-	g.add_child(puddle)
-
-	g.visible = false
-	return g
-
-
-## 隐藏全部道具，再显示指定分支的道具（Choice.NONE 表示清空）。
-func _apply_branch_props(choice: Choice) -> void:
-	for prop_list in props_by_branch.values():
-		for p in prop_list:
-			p.visible = false
-	var chosen: Array = props_by_branch.get(choice, [])
-	for p in chosen:
-		p.visible = true
-
-
-# ---------------------------------------------------------------------------
-# Interactables
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Furniture occluders: same painted furniture re-drawn over the player via
-# YSort when the player walks north of it (extracted from the background
-# art by scripts/extract_occluders.ps1).
-# ---------------------------------------------------------------------------
-
-# 每件: 遮挡纹理 + 游戏内 bbox (x, y, w, h)，坐标由提取脚本打印。
-const OCC_SCALE := Vector2(1152.0 / 1376.0, 648.0 / 768.0)
-
-func _build_occluders() -> void:
-	var pieces := [
-		{ "tex": "res://assets/occluders/occ_bed.png", "box": Rect2(48.6, 315.6, 246.1, 178.9) },
-		{ "tex": "res://assets/occluders/occ_bench.png", "box": Rect2(290.5, 440.4, 96.3, 80.2) },
-		{ "tex": "res://assets/occluders/occ_table.png", "box": Rect2(476.4, 390.7, 103.8, 103.8) },
-		{ "tex": "res://assets/occluders/occ_sofa.png", "box": Rect2(642.1, 418.5, 156.6, 109.7) },
-		{ "tex": "res://assets/occluders/occ_desk.png", "box": Rect2(840.6, 388.1, 161.6, 92.0) },
-	]
-	for piece in pieces:
-		var box: Rect2 = piece["box"]
-		var wrapper := Node2D.new()
-		wrapper.name = "Occluder"
-		# YSort 排序锚点 = 家具前沿（y 最大处）。
-		wrapper.position = Vector2(box.position.x + box.size.x * 0.5, box.position.y + box.size.y)
-		var sprite := Sprite2D.new()
-		sprite.texture = load(piece["tex"])
-		sprite.scale = OCC_SCALE
-		sprite.position = Vector2(0.0, -box.size.y * 0.5)
-		wrapper.add_child(sprite)
-		room.add_child(wrapper)
-
-
-func _register(id: String, node: Node2D, prompt: String, text: String, radius: float) -> void:
-	interactables.append(InteractableEntry.new(id, node, prompt, text, radius))
-
-
-func _build_interactables() -> void:
-	# 手机（背景图茶几在中央偏左约 (500,450)，热区改 (500,455)，半径 95）
-	var phone := Node2D.new()
-	phone.name = "Phone"
-	phone.position = Vector2(500, 455)
-	room.add_child(phone)
-	_register("phone", phone, "手机", "林夏：我在你楼下。", 95.0)
-
-	# 门（背景图门在左后墙，门板约 (175,140)，热区改 (180,325)，半径 105）
-	var door := Node2D.new()
-	door.name = "Door"
-	door.position = Vector2(175, 335)
-	walls.add_child(door)
-	_register("door", door, "门", "门外只有雨声。", 105.0)
-
-	# 笔记本（标定 (960,435) 压书桌桌面，热区放桌面中心，半径 95）
-	var laptop := Node2D.new()
-	laptop.name = "Laptop"
-	laptop.position = Vector2(940, 440)
-	room.add_child(laptop)
-	_register("laptop", laptop, "笔记本", "你的个人电脑，屏幕暗着。", 95.0)
-
-	# 相框（背景图相框在中左墙约 (415,195)，热区改 (415,335)，半径 95）
-	var photo := Node2D.new()
-	photo.name = "Photo"
-	photo.position = Vector2(415, 335)
-	walls.add_child(photo)
-	_register("photo", photo, "照片", "一张有些褪色的合影。", 95.0)
-
-	# 信（书桌左前角，标定 (898,415)，半径 80；信封精灵常显）
-	var letter := Node2D.new()
-	letter.name = "Letter"
-	letter.position = Vector2(898, 415)
-	var envelope := _make_prop_sprite("res://assets/props/prop_envelope.png", Vector2.ZERO, Vector2(24, 18))
-	letter.add_child(envelope)
-	room.add_child(letter)
-	_register("letter", letter, "信", "一封没拆开的信，压在桌角。", 80.0)
-
-	# 书架（后墙照片下方，锚点 (440,312)，半径 64）
-	var bookshelf := Node2D.new()
-	bookshelf.name = "BookshelfAnchor"
-	bookshelf.position = Vector2(440, 312)
-	room.add_child(bookshelf)
-	_register("bookshelf", bookshelf, "书架", "旧书架，塞着大学时的书。", 64.0)
-
-
-func _build_boundary() -> void:
-	_add_wall(self, Vector2(220, 300), Vector2(1060, 300), 8.0)
-	_add_wall(self, Vector2(220, 300), Vector2(130, 660), 8.0)
-	_add_wall(self, Vector2(1060, 300), Vector2(1150, 660), 8.0)
-	_add_wall(self, Vector2(130, 660), Vector2(1150, 660), 8.0)
-
-
-# ---------------------------------------------------------------------------
-# Player / UI setup
-# ---------------------------------------------------------------------------
-
-func _setup_player() -> void:
-	player.position = Vector2(620, 570)
-
-
-func _setup_ui() -> void:
-	hint_label.text = "WASD / 方向键 移动 · E 交互"
-	hint_label.anchor_left = 0.0
-	hint_label.anchor_top = 1.0
-	hint_label.anchor_right = 0.0
-	hint_label.anchor_bottom = 1.0
-	hint_label.offset_left = 24.0
-	hint_label.offset_top = -42.0
-	hint_label.add_theme_font_size_override("font_size", 15)
-	hint_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
-
-	prompt_label.anchor_left = 0.5
-	prompt_label.anchor_right = 0.5
-	prompt_label.anchor_top = 0.72
-	prompt_label.anchor_bottom = 0.72
-	prompt_label.offset_left = -200.0
-	prompt_label.offset_right = 200.0
-	prompt_label.offset_top = -20.0
-	prompt_label.offset_bottom = 20.0
-	prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	prompt_label.add_theme_font_size_override("font_size", 20)
-	prompt_label.visible = false
-
-	message_label.anchor_left = 0.5
-	message_label.anchor_right = 0.5
-	message_label.anchor_top = 0.82
-	message_label.anchor_bottom = 0.82
-	message_label.offset_left = -480.0
-	message_label.offset_right = 480.0
-	message_label.offset_top = -24.0
-	message_label.offset_bottom = 24.0
-	message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	message_label.add_theme_font_size_override("font_size", 24)
-	message_label.visible = false
-
-	# 分支选项 UI（按 1/2/3 交互）
-	choices_label = Label.new()
-	choices_label.name = "Choices"
-	choices_label.anchor_left = 0.5
-	choices_label.anchor_right = 0.5
-	choices_label.anchor_top = 0.80
-	choices_label.anchor_bottom = 0.80
-	choices_label.offset_left = -300.0
-	choices_label.offset_right = 300.0
-	choices_label.offset_top = -15.0
-	choices_label.offset_bottom = 95.0
-	choices_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	choices_label.add_theme_font_size_override("font_size", 20)
-	choices_label.add_theme_color_override("font_color", Color(0.9, 0.92, 0.96, 0.95))
-	choices_label.add_theme_constant_override("line_spacing", 8)
-	choices_label.visible = false
-	$UI.add_child(choices_label)
-
-	# 全屏黑色遮罩与分支字幕展示
-	overlay = ColorRect.new()
-	overlay.name = "Overlay"
-	overlay.color = Color(0.0, 0.0, 0.0, 1.0)
-	overlay.anchor_left = 0.0
-	overlay.anchor_top = 0.0
-	overlay.anchor_right = 1.0
-	overlay.anchor_bottom = 1.0
-	overlay.offset_left = 0.0
-	overlay.offset_top = 0.0
-	overlay.offset_right = 0.0
-	overlay.offset_bottom = 0.0
-	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-	overlay.visible = false
-	$UI.add_child(overlay)
-
-	branch_text_label = Label.new()
-	branch_text_label.name = "BranchText"
-	branch_text_label.anchor_left = 0.5
-	branch_text_label.anchor_right = 0.5
-	branch_text_label.anchor_top = 0.45
-	branch_text_label.anchor_bottom = 0.45
-	branch_text_label.offset_left = -480.0
-	branch_text_label.offset_right = 480.0
-	branch_text_label.offset_top = -80.0
-	branch_text_label.offset_bottom = 80.0
-	branch_text_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	branch_text_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	branch_text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	branch_text_label.add_theme_font_size_override("font_size", 22)
-	branch_text_label.add_theme_color_override("font_color", Color(0.92, 0.92, 0.94))
-	branch_text_label.add_theme_constant_override("line_spacing", 16)
-	overlay.add_child(branch_text_label)
-
-	continue_hint_label = Label.new()
-	continue_hint_label.name = "ContinueHint"
-	continue_hint_label.anchor_left = 0.5
-	continue_hint_label.anchor_right = 0.5
-	continue_hint_label.anchor_top = 0.88
-	continue_hint_label.anchor_bottom = 0.88
-	continue_hint_label.offset_left = -200.0
-	continue_hint_label.offset_right = 200.0
-	continue_hint_label.offset_top = -15.0
-	continue_hint_label.offset_bottom = 15.0
-	continue_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	continue_hint_label.text = "按 E 或 空格 返回"
-	continue_hint_label.add_theme_font_size_override("font_size", 16)
-	continue_hint_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
-	overlay.add_child(continue_hint_label)
-
-	# Milestone 2: ELSE 全屏界面与布局
-	else_overlay = ColorRect.new()
-	else_overlay.name = "ElseOverlay"
-	else_overlay.color = Color(0.0, 0.0, 0.0, 1.0)
-	else_overlay.anchor_left = 0.0
-	else_overlay.anchor_top = 0.0
-	else_overlay.anchor_right = 1.0
-	else_overlay.anchor_bottom = 1.0
-	else_overlay.offset_left = 0.0
-	else_overlay.offset_top = 0.0
-	else_overlay.offset_right = 0.0
-	else_overlay.offset_bottom = 0.0
-	else_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-	else_overlay.visible = false
-	$UI.add_child(else_overlay)
-
-	else_box = VBoxContainer.new()
-	else_box.name = "ElseBox"
-	else_box.anchor_left = 0.5
-	else_box.anchor_right = 0.5
-	else_box.anchor_top = 0.44
-	else_box.anchor_bottom = 0.44
-	else_box.offset_left = -360.0
-	else_box.offset_right = 360.0
-	else_box.offset_top = -170.0
-	else_box.offset_bottom = 170.0
-	else_box.alignment = BoxContainer.ALIGNMENT_CENTER
-	else_box.add_theme_constant_override("separation", 22)
-	else_overlay.add_child(else_box)
-
-	else_title_label = Label.new()
-	else_title_label.name = "Title"
-	else_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	else_title_label.text = "ELSE"
-	else_title_label.add_theme_font_size_override("font_size", 28)
-	else_title_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.97))
-	else_box.add_child(else_title_label)
-
-	else_subtitle_label = Label.new()
-	else_subtitle_label.name = "Subtitle"
-	else_subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	else_subtitle_label.text = "Unresolved decision detected.\n重构另一种可能？"
-	else_subtitle_label.add_theme_font_size_override("font_size", 19)
-	else_subtitle_label.add_theme_color_override("font_color", Color(0.78, 0.82, 0.88))
-	else_subtitle_label.add_theme_constant_override("line_spacing", 8)
-	else_box.add_child(else_subtitle_label)
-
-	else_options_label = Label.new()
-	else_options_label.name = "Options"
-	else_options_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	else_options_label.text = "[ 1 ] RECONSTRUCT  重构\n[ 2 ] NOT NOW      暂不"
-	else_options_label.add_theme_font_size_override("font_size", 20)
-	else_options_label.add_theme_color_override("font_color", Color(0.92, 0.92, 0.96))
-	else_options_label.add_theme_constant_override("line_spacing", 12)
-	else_box.add_child(else_options_label)
-
-	else_history_label = Label.new()
-	else_history_label.name = "History"
-	else_history_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	else_history_label.text = ""
-	else_history_label.add_theme_font_size_override("font_size", 15)
-	else_history_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
-	else_box.add_child(else_history_label)
-
-	# Milestone 3: 金色 Anchor 展示（仅在获得后可见）
-	else_anchor_label = Label.new()
-	else_anchor_label.name = "Anchor"
-	else_anchor_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	else_anchor_label.text = ""
-	else_anchor_label.add_theme_font_size_override("font_size", 16)
-	else_anchor_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.35))
-	else_anchor_label.add_theme_constant_override("line_spacing", 6)
-	else_anchor_label.visible = false
-	else_box.add_child(else_anchor_label)
-
-	else_hint_label = Label.new()
-	else_hint_label.name = "ElseHint"
-	else_hint_label.anchor_left = 0.5
-	else_hint_label.anchor_right = 0.5
-	else_hint_label.anchor_top = 0.88
-	else_hint_label.anchor_bottom = 0.88
-	else_hint_label.offset_left = -200.0
-	else_hint_label.offset_right = 200.0
-	else_hint_label.offset_top = -15.0
-	else_hint_label.offset_bottom = 15.0
-	else_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	else_hint_label.text = "按 1 / 2 选择 · ESC 取消"
-	else_hint_label.add_theme_font_size_override("font_size", 16)
-	else_hint_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
-	else_overlay.add_child(else_hint_label)
-
-
-# ---------------------------------------------------------------------------
-# Interaction, message and rain updates
-# ---------------------------------------------------------------------------
-
-func _update_interaction() -> void:
-	var nearest: InteractableEntry = null
-	var best := INF
-	for entry in interactables:
-		var distance := player.global_position.distance_to(entry.node.global_position)
-		if distance <= entry.radius and distance < best:
-			best = distance
-			nearest = entry
-	current = nearest
-	if current != null:
-		prompt_label.text = "E · " + current.prompt
-		prompt_label.visible = true
-	else:
-		prompt_label.visible = false
-
-
-func _update_message(delta: float) -> void:
-	if message_time > 0.0:
-		message_time -= delta
-		if message_time <= 0.0:
-			message_label.visible = false
-
-
-func _show_message(text: String) -> void:
-	message_label.anchor_top = 0.82
-	message_label.anchor_bottom = 0.82
-	message_label.text = text
-	message_label.visible = true
-	message_time = message_duration
-
-
-func _open_choice() -> void:
-	current_state = State.CHOICE
-	prompt_label.visible = false
-	player.set_physics_process(false)
-	player.velocity = Vector2.ZERO
-
-	# 手机消息（置于选项上方）
-	message_label.anchor_top = 0.71
-	message_label.anchor_bottom = 0.71
-	message_label.text = "林夏：我在你楼下。"
-	message_label.visible = true
-	message_time = 0.0
-
-	# 三个分支选项
-	choices_label.text = "[1] 下楼\n[2] 回复\n[3] 不回复"
-	choices_label.visible = true
-	hint_label.text = "按 1 / 2 / 3 做出选择 · ESC 取消"
-	hint_label.visible = true
-
-
-func _close_choice() -> void:
+	if not event is InputEventKey or not event.pressed or event.echo:
+		return
+	var key: int = event.physical_keycode if event.physical_keycode!=0 else event.keycode
+	if key==KEY_ESCAPE:
+		if paused:
+			_resume()
+		elif current_state==State.OPTIONS and "close" in ui.option_ids:
+			select_option("close")
+		elif current_state!=State.ENDED:
+			_pause()
+		get_viewport().set_input_as_handled()
+		return
+	if paused:
+		if key>=KEY_1 and key<=KEY_9:
+			var pause_index := key-KEY_1
+			if pause_index<ui.option_ids.size(): select_option(ui.option_ids[pause_index])
+			get_viewport().set_input_as_handled()
+		return
+	if current_state in [State.OPTIONS,State.ENDED] and key>=KEY_1 and key<=KEY_9:
+		var index := key-KEY_1
+		if index<ui.option_ids.size():
+			select_option(ui.option_ids[index])
+	elif current_state==State.DIALOGUE and key in [KEY_E,KEY_SPACE,KEY_ENTER]:
+		advance_dialogue()
+	elif current_state==State.NORMAL and key==KEY_E and not stage.current.is_empty():
+		interact(stage.current.id)
+	get_viewport().set_input_as_handled()
+
+func _freeze() -> void:
+	stage.player.stop()
+	stage.player.set_physics_process(false)
+
+func _normal() -> void:
 	current_state = State.NORMAL
-	message_label.visible = false
-	choices_label.visible = false
-	hint_label.text = "WASD / 方向键 移动 · E 交互"
-	player.set_physics_process(true)
+	ui.close()
+	stage.player.set_physics_process(true)
+	ui.hint.visible = true
 
+func _options(title: String,text: String,options: Array,settings: bool = false) -> void:
+	current_state = State.OPTIONS
+	_freeze()
+	_menu_title = title
+	_menu_text = text
+	_menu_options = options.duplicate(true)
+	ui.show_options(title,text,options,settings)
 
-func _select_choice(choice: Choice) -> void:
-	made_choice = choice
-	current_state = State.BRANCH_VIEW
+func _show_title() -> void:
+	var options: Array = [["new","开始这个雨夜"]]
+	if FileAccess.file_exists(SAVE_PATH):
+		options.append(["load","继续上次的雨夜"])
+	options.append(["settings","声音与文字"])
+	options.append(["quit","退出"])
+	_options("OTHERWISE","雨停之前\n一个关于告别、记忆和另一种可能的短篇。\n建议戴耳机，也可以完全静音游玩。",options)
 
-	# 隐藏选择与提示界面
-	message_label.visible = false
-	choices_label.visible = false
-	prompt_label.visible = false
-	hint_label.visible = false
+func new_game() -> void:
+	get_tree().paused = false
+	paused = false
+	phase = Phase.OPENING
+	reality_choice = 0
+	simulation_choice = 0
+	in_simulation = false
+	simulation_completed = false
+	shelf_hint_known = false
+	hair_tie_verified = false
+	anchor = false
+	final_response = 0
+	reconstruct_count = 0
+	seen_events.clear()
+	seen_branches.clear()
+	stage.simulation = false
+	stage.apply_branch(0)
+	stage.tie.visible = false
+	stage.set_pose("empty")
+	stage.set_location(false)
+	stage.player.position = Vector2(605,570)
+	stage.phone_glow.visible = false
+	stage.laptop_glow.visible = false
+	stage.set_location(false)
+	_start_dialogue(STORY.opening(),func(): phase=Phase.FIRST_READY; _normal(); save_checkpoint())
 
-	# 分支字幕内容（基础文本 + Anchor / 信等叠加，集中于 _branch_text）
-	branch_text_label.text = _branch_text(choice)
+func _start_dialogue(data: Array,finished: Callable) -> void:
+	_freeze()
+	current_state = State.DIALOGUE
+	lines = data
+	line_index = 0
+	dialogue_done = finished
+	_render_line()
 
-	# 显示全屏黑色遮罩
-	overlay.visible = true
+func _render_line() -> void:
+	var data: Dictionary = lines[line_index]
+	stage.set_pose("empty" if phase==Phase.FINAL_READY else data.pose)
+	var event: String = data.event
+	if event!="" and not seen_events.has(event):
+		seen_events.append(event)
+		match event:
+			"phone_arrived":
+				stage.phone_glow.visible = true
+				sound.cue("phone")
+			"shelf_hint":
+				if in_simulation:
+					shelf_hint_known = true
+			"tie_verified":
+				if not in_simulation and shelf_hint_known:
+					hair_tie_verified = true
+					stage.tie.visible = true
+	ui.show_line(data,line_index,lines.size())
 
+func advance_dialogue() -> void:
+	if paused or current_state!=State.DIALOGUE:
+		return
+	line_index += 1
+	if line_index<lines.size():
+		_render_line()
+	else:
+		var done := dialogue_done
+		dialogue_done = Callable()
+		ui.close()
+		if done.is_valid():
+			done.call()
 
-## 分支演出文本：基础文本 + 叠加（Anchor 领悟行 → 重构中的「信」台词）。
-func _branch_text(choice: Choice) -> String:
-	var text := ""
-	match choice:
-		Choice.DOWN:
-			text = "你披上外套下楼。她站在单元门口，伞没撑开，发梢滴着水。\n林夏：「明天……你能陪我去车站吗？就这一次。」"
-		Choice.REPLY:
-			text = "你回：「上来吧。」\n她进门，带着一身雨气，却没怎么说话。你倒水时发现，她的手机一直扣在桌上，屏幕分明还亮着。"
-		Choice.IGNORE:
-			text = "你没有回复。后半夜你走到窗边，楼下的人影已经不见了。\n天亮时你在门口捡到一张被雨打湿的字条，只写着半句：「其实我明天要——」"
+func interact(id: String) -> void:
+	if paused or current_state!=State.NORMAL:
+		return
+	match id:
+		"phone":
+			_open_phone()
+		"door":
+			if phase==Phase.DEPARTURE:
+				sound.cue("door")
+				_start_branch(1,false)
+			else:
+				_inspect("门","雨声在门缝外。今晚发生的事没有消失；你仍可以决定下一句话怎么说。")
+		"laptop":
+			if reality_choice==0 or phase==Phase.DEPARTURE:
+				_inspect("电脑","你的离线个人实验 ELSE。屏幕还暗着，今晚的那条消息还没有一个结果。")
+			else:
+				_open_else()
+		"bookshelf":
+			if shelf_hint_known and not hair_tie_verified and not in_simulation:
+				_options("书架下层","最左边那本旧书还在。你记得模拟里那句具体的位置。",[["verify","把旧书挪开，检查背后"],["close","先放回去"]])
+			elif hair_tie_verified and not anchor:
+				_verify_finished()
+			elif hair_tie_verified:
+				_inspect("书架下层","发圈还在旧书背后。内侧的蓝线是真的。你没有把它从模拟里带出来。")
+			else:
+				_inspect("书架","大学时的旧书。最下层挤得很满，只能看见书脊。")
+		"photo":
+			_inspect("照片","那次你们在街角的咖啡店躲雨。她嫌你看镜头太认真，按快门前笑了一下。照片不是 ELSE 的输入资料。")
+		"letter":
+			_inspect("信","普通的纸信，封口完好。你总说等忙完再拆。它不能证明 ELSE 知道什么秘密，只提醒你：有些事情一直被推到明天。")
+		"mug":
+			_inspect("第二个杯子","杯沿还留着一点水。她握住杯子的时候，才终于把明天的事说出口。")
+		"shoes":
+			_inspect("鞋","她上楼时换下的备用鞋。位置和以前一样，人却没有留下。")
+		"umbrella":
+			_inspect("伞","伞尖的水已经滴得很慢。你们都提起过‘等雨停’，今晚却不能一直等下去。")
+		"note":
+			_inspect("字条","明早七点的车。她希望你陪她走一段；如果不能，也请今晚告诉她。纸已经没有刚才那么湿了。")
 
-	# 叠加：Anchor 领悟行（已有 Anchor 时的内心独白）
-	if anchors.has("fear_of_tomorrow"):
-		text += "\n你忽然明白：她不是在等一个答复，她是在害怕明天。"
-	# 节拍：
-	# 第一次重构·回复：林夏指出桌上未拆的信（信节拍）
-	# 第二次重构·回复：林夏提到书架下层（书架异常节拍）
-	if reconstruct_count >= 1 and choice == Choice.REPLY and not letter_revealed:
-		text += "\n林夏：「……你桌上那封信，一直没拆开吧。」"
-		letter_revealed = true
-	elif reconstruct_count >= 2 and choice == Choice.REPLY and not bookshelf_hinted:
-		text += "\n林夏：「你书柜最下面那层，还有我的东西。」"
-		bookshelf_hinted = true
+func _inspect(title: String,text: String) -> void:
+	_start_dialogue([STORY.line(title,text)],_normal)
+
+func _open_phone() -> void:
+	if reality_choice==0:
+		_options("林夏","我在你楼下。",[["first_1","下楼"],["first_2","回复：上来吧"],["first_3","不回复"],["close","再想一想"]])
+	elif phase==Phase.DEPARTURE:
+		_inspect("手机","你已经决定下楼。走到门口，按 E 出门。原来的消息不能重新选择。")
+	else:
+		var text := "原来的决定：%s。\n林夏明早七点离开，今晚还在等一个明确答复。"%_choice_name(reality_choice)
+		if shelf_hint_known and not hair_tie_verified:
+			text += "\n你也可以先检查书架里的那条线索。"
+		_options("手机",text,[["call","联系林夏，把今晚的话说完"],["close","先在房间走走"]])
+
+func _choice_name(choice: int) -> String:
+	return ["未选择","下楼","让她上来","不回复"][choice]
+
+func _start_branch(choice: int,simulated: bool) -> void:
+	stage.apply_branch(choice)
+	stage.set_location(choice==1)
+	_start_dialogue(STORY.branch(choice,simulated),func(): _finish_branch(choice,simulated))
+
+func _finish_branch(choice: int,simulated: bool) -> void:
+	stage.set_pose("empty")
+	stage.set_location(false)
+	if not seen_branches.has(choice):
+		seen_branches.append(choice)
+	if simulated:
+		simulation_completed = true
+		_return_from_simulation()
+	else:
+		phase = Phase.ELSE_READY
+		stage.laptop_glow.visible = true
+		sound.cue("computer")
+		_normal()
+		save_checkpoint()
+		_inspect("", "电脑的屏幕自己亮了一下。你可以查看 ELSE，也可以直接拿起手机给林夏最后的答复。")
+
+func _else_text() -> String:
+	var text := "概率重构，不是已发生的事实。\n输入：手动导入的近期消息、日历、文字笔记。\n未接入照片、摄像头、房间扫描或实时设备。\n输入不含书架、发圈和蓝线修补。"
+	if simulation_completed:
+		text += "\n已体验：%s。重构结束，现实仍是原来的选择。"%_choice_name(simulation_choice)
+	if anchor:
+		text += "\n\nANCHOR：她不只是生气。她也在害怕明天。"
 	return text
 
-
-## 去重后体验过 ≥2 个分支时获得 fear_of_tomorrow Anchor（仅一次）。
-func _maybe_earn_anchor() -> void:
-	if anchors.has("fear_of_tomorrow"):
-		return
-	var unique_branches: Array[String] = []
-	for b in seen_branches:
-		if not unique_branches.has(b):
-			unique_branches.append(b)
-	if unique_branches.size() >= 2:
-		anchors.append("fear_of_tomorrow")
-
-
-func _return_to_room() -> void:
-	# 每完整看过一个分支演出就追加该分支名
-	var branch_name := _get_choice_name(made_choice)
-	if branch_name != "":
-		seen_branches.append(branch_name)
-	_maybe_earn_anchor()
-
-	overlay.visible = false
-	current_state = State.NORMAL
-	hint_label.text = "WASD / 方向键 移动 · E 交互"
-	hint_label.visible = true
-	player.set_physics_process(true)
-
-	# 房间反映刚看过的分支留下的痕迹
-	_apply_branch_props(made_choice)
-	_update_letter_text()
-	_update_bookshelf()
-
-
-## 信被模拟中的林夏指认后，真实房间里的信变为惊悚确认文本。
-func _update_letter_text() -> void:
-	if not letter_revealed:
-		return
-	for entry in interactables:
-		if entry.id == "letter":
-			entry.text = "封口完好，从未拆开。可你盯着它，后背发凉——\nELSE 是怎么知道它在这里的？"
-
-
-## 书架异常：模拟中的台词听过之后，真实书架最下层出现发圈。
-func _update_bookshelf() -> void:
-	if not bookshelf_hinted or hair_tie_found:
-		return
-	hair_tie_found = true
-	if _hair_tie_node != null:
-		_hair_tie_node.visible = true
-	for entry in interactables:
-		if entry.id == "bookshelf":
-			entry.prompt = "书架下层"
-			entry.text = "最下层隔板上，静静躺着一枚发圈。\n是她的。可你从没见她碰过这个书架——ELSE 的数据里，也不该有它。"
-
-
-func _get_choice_name(c: Choice) -> String:
-	match c:
-		Choice.DOWN:
-			return "下楼"
-		Choice.REPLY:
-			return "回复"
-		Choice.IGNORE:
-			return "不回复"
-		_:
-			return ""
-
-
 func _open_else() -> void:
-	current_state = State.ELSE
-	prompt_label.visible = false
-	message_label.visible = false
-	hint_label.visible = false
-	player.set_physics_process(false)
-	player.velocity = Vector2.ZERO
+	ui.graph_data = {"reality":reality_choice,"simulated":simulation_choice,"completed":simulation_completed,"anchored":anchor}
+	var options: Array = []
+	if not simulation_completed:
+		options.append(["reconstruct","重构另一种可能"])
+	options.append(["data","查看实际输入资料"])
+	options.append(["call","暂不重构，回到现实联系她"])
+	options.append(["close","关闭电脑"])
+	_options("ELSE",_else_text(),options)
 
-	# 去重列出已体验的分支
-	var unique_branches: Array[String] = []
-	for b in seen_branches:
-		if not unique_branches.has(b):
-			unique_branches.append(b)
-
-	if unique_branches.is_empty():
-		else_history_label.text = ""
-		else_history_label.visible = false
-	else:
-		else_history_label.text = "已体验的分支：" + "、".join(unique_branches)
-		else_history_label.visible = true
-
-	# Anchor（金色，置于已体验分支下方）
-	if anchors.is_empty():
-		else_anchor_label.visible = false
-	else:
-		else_anchor_label.text = "ANCHOR\n她不是因为你没有下楼而生气。\n她是在害怕明天。"
-		else_anchor_label.visible = true
-
-	else_box.visible = true
-	else_hint_label.visible = true
-	else_overlay.visible = true
-
-
-func _close_else() -> void:
-	if _is_reconstructing:
+func _enter_simulation(choice: int) -> void:
+	if simulation_completed or choice==reality_choice or reality_choice==0:
 		return
-	else_overlay.visible = false
-	current_state = State.NORMAL
-	hint_label.text = "WASD / 方向键 移动 · E 交互"
-	hint_label.visible = true
-	player.set_physics_process(true)
-
-
-func _reconstruct() -> void:
-	if _is_reconstructing:
-		return
-	_is_reconstructing = true
-
-	# 隐藏文本内容，留出纯黑屏幕停顿约 0.8 秒
-	else_box.visible = false
-	else_hint_label.visible = false
-
-	await get_tree().create_timer(0.8).timeout
-	if not is_inside_tree():
-		return
-
-	# 房间回到决策时刻，之前分支结果视为未发生
+	_reality_position = stage.player.position
+	in_simulation = true
+	simulation_choice = choice
 	reconstruct_count += 1
-	_apply_reconstruct_anomalies()
-	_apply_branch_props(Choice.NONE)
-	made_choice = Choice.NONE
+	stage.simulation = true
+	stage.phone_glow.visible = false
+	stage.laptop_glow.visible = false
+	stage.tie.visible = false
+	_start_branch(choice,true)
 
-	# 玩家瞬移到手机旁
-	player.position = Vector2(500, 545)
-	player.velocity = Vector2.ZERO
+func _return_from_simulation() -> void:
+	in_simulation = false
+	stage.simulation = false
+	stage.set_location(false)
+	stage.set_pose("empty")
+	stage.apply_branch(reality_choice)
+	stage.player.position = _reality_position
+	stage.tie.visible = hair_tie_verified
+	stage.phone_glow.visible = false
+	stage.laptop_glow.visible = not simulation_completed
+	phase = Phase.VERIFY_READY if shelf_hint_known else Phase.ELSE_READY
+	_normal()
+	save_checkpoint()
+	_inspect("现实", "重构已关闭。原来的房间和选择还在。"+("\n那句关于书架的话却留在你脑子里。" if shelf_hint_known else "\n你没有读到的内容，没有成为记忆。"))
 
-	else_overlay.visible = false
-	else_box.visible = true
-	else_hint_label.visible = true
-	_is_reconstructing = false
+func _verify_finished() -> void:
+	save_checkpoint()
+	_options("记住一种理解","她不是只在责怪你今晚的选择。\n她也在害怕明天，害怕最后的话又被放下。",[["anchor","记住它，再联系她"],["close","先想一想"]])
 
-	# 立即重新显示「林夏：我在你楼下。」+ 三个选项
-	_open_choice()
+func _begin_final() -> void:
+	if reality_choice==0 or phase==Phase.DEPARTURE or in_simulation:
+		return
+	phase = Phase.FINAL_READY
+	_start_dialogue(STORY.final_call(anchor),func(): _options("最后的答复","她的离开已经决定。你能决定的是，接下来怎样认真回应。",[["final_1","答应明早陪她去车站"],["final_2","坦白不能陪同，把今晚的话说完"]]))
 
+func _end() -> void:
+	phase = Phase.END
+	current_state = State.ENDED
+	stage.set_pose("empty")
+	ui.show_options("雨停之前",("你答应陪她走完离开前的那段路。" if final_response==1 else "你给出了清楚的答复，告别不再停在沉默里。")+"\n\nOTHERWISE · 短篇终\n剧情与工程：Otherwise 项目\n角色与回忆画面：AI 辅助创作\n声音：项目原创程序合成\n字体：Noto Sans SC · SIL OFL\n\n"+("关系得到回应，ELSE 的秘密仍留在那枚发圈里。" if anchor else "这一晚没有被改写。但你把下一句话说完了。"),[["new","重新开始这个雨夜"],["quit","退出"]])
+	if FileAccess.file_exists(SAVE_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_PATH))
 
-func _apply_reconstruct_anomalies() -> void:
-	for drop in _rain_anomaly:
-		drop.visible = true
-	for entry in interactables:
-		if entry.id == "photo":
-			entry.text = "一张有些褪色的合影。照片里的笑容，好像比记忆里淡了一点。"
+func select_option(id: String) -> void:
+	if not id in ui.option_ids:
+		return
+	if paused:
+		match id:
+			"resume": _resume()
+			"save": save_checkpoint(); _resume()
+			"abort": _resume(); _return_from_simulation()
+			"new": _resume(); new_game()
+			"quit": _request_quit()
+		return
+	if current_state not in [State.OPTIONS,State.ENDED]:
+		return
+	match id:
+		"new": new_game()
+		"load": load_checkpoint()
+		"quit": _request_quit()
+		"settings": _options("声音与文字","静音不影响理解剧情。字号设置会保留。",[["title","返回标题"]],true)
+		"title": _show_title()
+		"close": _normal()
+		"first_1","first_2","first_3":
+			if reality_choice!=0: return
+			reality_choice = int(id.right(1))
+			stage.phone_glow.visible = false
+			if reality_choice==1:
+				phase = Phase.DEPARTURE
+				_normal()
+				save_checkpoint()
+				_inspect("", "你决定下楼。走到门口，按 E 出门。")
+			else:
+				_start_branch(reality_choice,false)
+		"reconstruct":
+			var options: Array = []
+			for choice in [1,2,3]:
+				if choice!=reality_choice:
+					options.append(["sim_%d"%choice,_choice_name(choice)])
+			options.append(["close","暂不重构"])
+			_options("选择一种可能","只有重构中的事件会重置。退出后，现实的决定和痕迹保持原样。",options)
+		"sim_1","sim_2","sim_3": _enter_simulation(int(id.right(1)))
+		"data": _options("ELSE 输入记录","2026-10-07 消息：林夏问你最近是否很忙。\n2026-10-08 日历：工作例会，交稿。\n手记：最近睡得晚，想把房间收拾一下。\n\n记录到此为止。没有书架照片或实时感知，没有发圈、蓝线、修补位置。\n输出仍只是推测，不能替她作出真实答复。",[["back_else","返回 ELSE"]])
+		"back_else": _open_else()
+		"verify": _start_dialogue(STORY.verify(),_verify_finished)
+		"anchor":
+			if not hair_tie_verified: return
+			anchor = true
+			phase = Phase.FINAL_READY
+			_normal()
+			save_checkpoint()
+			_begin_final()
+		"call": _begin_final()
+		"final_1","final_2":
+			if final_response!=0: return
+			final_response = int(id.right(1))
+			_start_dialogue(STORY.ending(final_response,anchor),_end)
 
+func _pause() -> void:
+	if current_state==State.TRANSITION:
+		return
+	paused_state = current_state
+	_paused_title = _menu_title
+	_paused_text = _menu_text
+	_paused_options = _menu_options.duplicate(true)
+	paused = true
+	get_tree().paused = true
+	var options: Array = [["resume","继续"]]
+	if current_state==State.NORMAL and not in_simulation:
+		options.append(["save","保存当前进度并继续"])
+	if in_simulation:
+		options.append(["abort","退出重构，回到原来的现实"])
+	options.append(["new","重新开始"])
+	options.append(["quit","退出游戏"])
+	ui.show_options("暂停","剧情与环境已暂停。进度在现实的关键节点自动保存。",options,true)
 
-func _update_rain(delta: float) -> void:
-	for drop in _rain:
-		drop.position.y += 130.0 * delta
-		drop.position.x -= 16.0 * delta
-		if drop.position.y > 262.0:
-			drop.position.y = 124.0
-			drop.position.x = randf_range(935.0, 1080.0)
+func _resume() -> void:
+	get_tree().paused = false
+	paused = false
+	current_state = paused_state
+	if current_state==State.DIALOGUE:
+		ui.show_line(lines[line_index],line_index,lines.size())
+	elif current_state==State.OPTIONS:
+		ui.show_options(_paused_title,_paused_text,_paused_options)
+	else:
+		ui.close()
 
-	if reconstruct_count >= 1:
-		for drop in _rain_anomaly:
-			drop.position.y += 140.0 * delta
-			drop.position.x -= 28.0 * delta
-			if drop.position.y > 262.0:
-				drop.position.y = 124.0
-				drop.position.x = randf_range(960.0, 1065.0)
+func save_checkpoint() -> bool:
+	if in_simulation or phase in [Phase.OPENING,Phase.END] or reality_choice<0:
+		return false
+	var data := {"version":1,"choice":reality_choice,"phase":phase,"completed":simulation_completed,"sim_choice":simulation_choice,"hint":shelf_hint_known,"verified":hair_tie_verified,"anchor":anchor,"reconstructions":reconstruct_count,"events":seen_events,"branches":seen_branches,"position":[stage.player.position.x,stage.player.position.y]}
+	var file := FileAccess.open(SAVE_PATH,FileAccess.WRITE)
+	if file==null:
+		return false
+	file.store_string(JSON.stringify(data))
+	file.flush()
+	var success := file.get_error()==OK
+	file.close()
+	return success
+
+func load_checkpoint() -> bool:
+	if not FileAccess.file_exists(SAVE_PATH): return false
+	var parser := JSON.new()
+	var parsed := parser.parse(FileAccess.get_file_as_string(SAVE_PATH))
+	var data: Variant = parser.data if parsed==OK else null
+	if not _valid_checkpoint(data):
+		_options("无法读取进度","存档格式不完整，可以重新开始。",[["new","重新开始"]])
+		return false
+	var choice := int(data.get("choice",-1))
+	var saved_phase := int(data.get("phase",-1))
+	if choice<0 or choice>3 or saved_phase not in [Phase.FIRST_READY,Phase.DEPARTURE,Phase.ELSE_READY,Phase.VERIFY_READY,Phase.FINAL_READY]:
+		_options("无法读取进度","存档内容不符合这个版本，可以重新开始。",[["new","重新开始"]])
+		return false
+	get_tree().paused = false
+	paused = false
+	reality_choice = choice
+	phase = saved_phase
+	in_simulation = false
+	simulation_completed = bool(data.get("completed",false))
+	simulation_choice = clampi(int(data.get("sim_choice",0)),0,3)
+	shelf_hint_known = bool(data.get("hint",false))
+	hair_tie_verified = bool(data.get("verified",false)) and shelf_hint_known
+	anchor = bool(data.get("anchor",false)) and hair_tie_verified
+	reconstruct_count = maxi(0,int(data.get("reconstructions",0)))
+	seen_events.assign(data.get("events",[]))
+	seen_branches.assign(data.get("branches",[]))
+	stage.simulation = false
+	stage.apply_branch(choice if phase>=Phase.ELSE_READY else 0)
+	stage.set_location(false)
+	var pos: Array = data.position
+	var position := Vector2(float(pos[0]),float(pos[1]))
+	var cell := Vector2i((position/8).floor())
+	if not stage.player.navigator.region.has_point(cell) or stage.player.navigator.is_point_solid(cell):
+		position = Vector2(605,570)
+	stage.player.position = position
+	stage.set_pose("empty")
+	stage.tie.visible = hair_tie_verified
+	stage.phone_glow.visible = choice==0
+	stage.laptop_glow.visible = phase>=Phase.ELSE_READY and not simulation_completed
+	final_response = 0
+	_normal()
+	return true
+
+func _valid_checkpoint(data: Variant) -> bool:
+	if not data is Dictionary or data.get("version",0)!=1: return false
+	for key in ["choice","phase","sim_choice","reconstructions"]:
+		if typeof(data.get(key)) not in [TYPE_INT,TYPE_FLOAT]: return false
+	for key in ["completed","hint","verified","anchor"]:
+		if not data.get(key) is bool: return false
+	for key in ["events","branches","position"]:
+		if not data.get(key) is Array: return false
+	if data.position.size()!=2: return false
+	for coordinate in data.position:
+		if typeof(coordinate) not in [TYPE_INT,TYPE_FLOAT] or not is_finite(float(coordinate)): return false
+	for event in data.events:
+		if not event is String: return false
+	for branch in data.branches:
+		if typeof(branch) not in [TYPE_INT,TYPE_FLOAT] or int(branch) not in [1,2,3]: return false
+	if int(data.phase)==Phase.FIRST_READY and int(data.choice)!=0: return false
+	if int(data.phase)!=Phase.FIRST_READY and int(data.choice)==0: return false
+	if int(data.phase)==Phase.DEPARTURE and int(data.choice)!=1: return false
+	return true
+
+func _change_setting(id: String,value: float) -> void:
+	if id=="volume": sound.set_volume(value)
+	var config := ConfigFile.new()
+	config.set_value("audio","volume",sound.volume)
+	config.set_value("text","scale",ui.font_scale)
+	config.save(SETTINGS_PATH)
+
+func _notification(what: int) -> void:
+	if what==NOTIFICATION_WM_CLOSE_REQUEST:
+		_request_quit()
+
+func _request_quit() -> void:
+	if _quitting: return
+	_quitting = true
+	_freeze()
+	sound.stop_all()
+	await get_tree().create_timer(0.35,true).timeout
+	get_tree().quit()
+
+func _load_settings() -> void:
+	var config := ConfigFile.new()
+	if config.load(SETTINGS_PATH)==OK:
+		sound.set_volume(clampf(float(config.get_value("audio","volume",0.65)),0,1))
+		ui.set_font_scale(clampf(float(config.get_value("text","scale",1.0)),1,1.35))

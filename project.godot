@@ -13,16 +13,22 @@ config_version=5
 config/name="Otherwise"
 config/description="A contemporary narrative game about the lives that might have happened otherwise."
 run/main_scene="res://scenes/apartment.tscn"
-config/features=PackedStringArray("4.2")
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/version="0.1.0"
+run/max_fps=60
 
 [display]
 
-window/size/viewport_width=1280
-window/size/viewport_height=720
+window/size/viewport_width=1152
+window/size/viewport_height=648
+window/size/window_width_override=1280
+window/size/window_height_override=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="keep"
+window/vsync/vsync_mode=0
 
 [rendering]
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.04, 0.045, 0.055, 1)

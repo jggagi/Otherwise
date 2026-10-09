@@ -1,5 +1,7 @@
 # Game Vision — Otherwise
 
+Production decision, 2026-10-09: this local 0.1.0 release completes a small authored story, using the existing 2D apartment and five new matching art assets. The current story is Lin Xia leaving the city tomorrow; tonight is a farewell. See SMALL_GAME_PLAN.md for the implemented scope and QA_REPORT.md for measured evidence. Future-city examples below are outside this release.
+
 ## 1. Creative thesis
 
 **Otherwise** is a contemporary narrative game set in **2026**, not in a futuristic world.
@@ -70,7 +72,7 @@ The player chooses to reconstruct.
 
 The room returns to the moment of the message.
 
-The player makes another choice.
+The player selects one unchosen branch. On return, the original decision and apartment traces are restored. A specific clue may persist only after it has actually been read.
 
 ---
 
@@ -84,14 +86,13 @@ Its apparent purpose:
 
 > reconstruct plausible counterfactual events from personal context.
 
-Possible data sources may be referenced narratively:
+The actual inputs in this short game are explicitly limited:
 
-- chat history
-- photos
+- recent manually imported messages
 - calendar events
-- location traces
-- personal notes
-- device history
+- written personal notes
+
+No photos, camera, room scan, live device history, shelf contents, hair tie or blue seam repair are available to ELSE. The photograph is a memory object, not an input. The player can inspect the complete small input record.
 
 For the prototype, these do **not** need real integrations. They are story context only.
 
@@ -136,7 +137,7 @@ ANCHOR
 她是在害怕明天。
 ```
 
-An Anchor may influence what the player can notice, ask, understand, or choose in another branch.
+In this short game, an Anchor changes the next real conversation: after actively verifying the hair tie, the protagonist can ask what she still wants to say before leaving. One optional completed reconstruction is available; early exits can be retried. Physical outcomes never transfer.
 
 The important principle:
 
@@ -170,7 +171,7 @@ Do not add a cast of supporting characters yet.
 
 ### Playtime
 
-Target approximately **20–30 minutes**.
+The initial design budget was **20–30 minutes** including exploration. The implemented short game is freely paced; no first-time human duration has been measured. Do not claim the budget as verified playtime.
 
 ### Branches
 
@@ -238,9 +239,9 @@ Whenever possible, let the room communicate the difference.
 
 ### Core look
 
-**Stylized 3D contemporary apartment diorama / stage box.**
+**Stylized 2D illustrated contemporary apartment diorama / stage box.**
 
-Use a fixed elevated **3/4 camera** with some perspective.
+Use the existing fixed elevated **3/4 illustrated composition**, with foot-based character sorting and simple 2D collision. No Camera3D or 3D conversion is needed.
 
 The apartment should feel like a carefully constructed miniature stage floating against darkness, but the materials and props should remain grounded and familiar.
 

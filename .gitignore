@@ -3,3 +3,5 @@
 
 # Acceptance screenshot evidence (regenerable)
 .verify/
+.local/
+releases/
