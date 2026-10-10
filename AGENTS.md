@@ -2,6 +2,8 @@
 
 This repository is intended to be implemented primarily in **Godot 4** on the X1 Lite Creative Lab.
 
+Production decision (2026-10-09): the current authored short game uses the existing **2D illustrated elevated 3/4 apartment**, following the user's request to complete the game and improve/replace its art. The old 3D foundation milestones below are historical prototype targets; do not migrate the current game to 3D or reinitialize it. Current scope and acceptance evidence are in `docs/SMALL_GAME_PLAN.md` and `docs/QA_REPORT.md`.
+
 Before making large changes, read [docs/GAME_VISION.md](docs/GAME_VISION.md).
 
 The project deliberately separates **creative direction**, **visual direction**, and **implementation**.
